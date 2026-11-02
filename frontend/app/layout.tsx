@@ -1,4 +1,5 @@
 import type { Metadata, Viewport } from 'next';
+import { Analytics } from '@vercel/analytics/next';
 import './globals.css';
 import Navbar from '@/components/layout/Navbar';
 import { ToastProvider } from '@/components/ui/Toast';
@@ -35,6 +36,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             <div id="main" className="flex flex-1 flex-col">{children}</div>
           </ToastProvider>
         </SessionProvider>
+        <Analytics />
       </body>
     </html>
   );

@@ -20,6 +20,9 @@ from .geo import haversine_km
 from .live import USER_AGENT, offline
 
 OVERPASS_URL = "https://overpass-api.de/api/interpreter"
+OVERPASS_MIRRORS = (OVERPASS_URL, "https://overpass.kumi.systems/api/interpreter",
+                    "https://maps.mail.ru/osm/tools/overpass/api/interpreter")
+FACILITY_HAZARDS = {"Cyclone", "Storm", "Flood", "Earthquake", "Landslide", "Wildfire", "Volcano", "Heatwave"}
 SACHET_RSS_URL = "https://sachet.ndma.gov.in/cap_public_website/rss/rss_india.xml"
 CAP_NS = {"cap": "urn:oasis:names:tc:emergency:cap:1.2"}
 
@@ -106,8 +109,8 @@ def _facilities_query(centers: list[tuple[float, float, float]]) -> str:
         clauses += [f'nwr["amenity"="hospital"]{around};',
                     f'nwr["social_facility"="shelter"]{around};',
                     f'nwr["emergency"="assembly_point"]{around};',
-                    f'nwr["name"~"[Cc]yclone [Ss]helter|[Ff]lood [Ss]helter|[Rr]elief [Cc]amp|[Rr]ehabilitation [Cc]entre"]{around};']
-    return "[out:json][timeout:20];(" + "".join(clauses) + ");out center tags 400;"
+                    f'nwr["amenity"="shelter"]["shelter_type"!~"public_transport|picnic_shelter|weather_shelter"]["name"]{around};']
+    return "[out:json][timeout:18];(" + "".join(clauses) + ");out center tags 400;"
 
 
 def parse_facilities(elements: list[dict], incidents: list[dict]) -> dict[str, list[dict]]:
@@ -154,7 +157,8 @@ def relief_facilities(incidents: list[dict], cache_get=None, cache_put=None) -> 
     Cached for six hours (in process and, when given, in the database) because Overpass is slow and rate-limited.
     """
     order = {"CRITICAL": 0, "HIGH": 1, "MODERATE": 2, "LOW": 3}
-    land = [d for d in incidents if d.get("status", "ACTIVE") == "ACTIVE" and d.get("state") != "Offshore"]
+    land = [d for d in incidents if d.get("status", "ACTIVE") == "ACTIVE" and d.get("category") in FACILITY_HAZARDS
+            and not str(d.get("location", "")).endswith("Sea") and d.get("state") not in {"Bay of Bengal", "Arabian Sea", "Indian Ocean"}]
     focus = sorted(land, key=lambda d: (order.get(d["severity"], 4), d["title"]))[:6]
     if not focus:
         return {"hospitals": [], "shelters": [], "mode": "NO_INCIDENTS", "fetched_at": None}
@@ -167,14 +171,19 @@ def relief_facilities(incidents: list[dict], cache_get=None, cache_put=None) -> 
         return cached
     if offline():
         return {"hospitals": [], "shelters": [], "mode": "OFFLINE", "fetched_at": None}
-    centers = [(d["lat"], d["lng"], max(5.0, min(30.0, float(d.get("radius_km") or 25)))) for d in focus]
-    try:
-        resp = httpx.post(OVERPASS_URL, data={"data": _facilities_query(centers)}, timeout=22.0,
-                          headers={"User-Agent": USER_AGENT})
-        resp.raise_for_status()
-        value = {**parse_facilities(resp.json().get("elements", []), focus), "mode": "LIVE",
-                 "fetched_at": datetime.now(timezone.utc).isoformat()}
-    except (httpx.HTTPError, ValueError):
+    centers = [(d["lat"], d["lng"], max(5.0, min(20.0, float(d.get("radius_km") or 20)))) for d in focus]
+    value = None
+    for url in OVERPASS_MIRRORS:  # the main instance often refuses or times out cloud traffic; try mirrors
+        try:
+            resp = httpx.post(url, data={"data": _facilities_query(centers)}, timeout=httpx.Timeout(9.0, connect=3.0),
+                              headers={"User-Agent": USER_AGENT})
+            resp.raise_for_status()
+            value = {**parse_facilities(resp.json().get("elements", []), focus), "mode": "LIVE",
+                     "fetched_at": datetime.now(timezone.utc).isoformat()}
+            break
+        except (httpx.HTTPError, ValueError):
+            continue
+    if value is None:
         stale = cache_get(key, None) if cache_get else None
         return stale or {"hospitals": [], "shelters": [], "mode": "OFFLINE", "fetched_at": None}
     _resource_cache.update(key=key, at=time.monotonic(), value=value)

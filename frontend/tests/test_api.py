@@ -522,3 +522,16 @@ def test_health_explains_degraded_database(client, monkeypatch):
     body = client.get("/api/health").json()
     assert body["database"] == "DEGRADED" and body["database_error"].startswith("OperationalError")
     assert "secretpw" not in str(body) and "127.0.0.1" not in str(body)
+
+
+def test_first_request_on_fresh_serverless_vm_pulls_feeds(monkeypatch):
+    """Regression: a new VM's monotonic clock starts near zero, which used to look like 'synced moments ago'."""
+    from api._lib.engines import live
+    db.MEMORY.reset()
+    live._state.update(synced_at=None, last=None)
+    monkeypatch.setattr(live, "offline", lambda: False)
+    monkeypatch.setattr(live.time, "monotonic", lambda: 5.0)
+    rows = live.parse_gdacs(GDACS_SAMPLE, datetime.now(timezone.utc))
+    monkeypatch.setattr(live, "fetch_all", lambda now=None: (rows, {s: "ok" for s in live.SOURCES}))
+    assert live.ensure_fresh()["refreshed"] is True
+    assert live.ensure_fresh()["reason"] == "fresh"
