@@ -372,7 +372,7 @@ def fetch_all(now: Optional[datetime] = None) -> tuple[list[dict], dict[str, str
 
 
 _lock = threading.Lock()
-_state: dict[str, Any] = {"synced_at": 0.0, "last": None}
+_state: dict[str, Any] = {"synced_at": None, "last": None}  # monotonic time of the last sync; None = never
 
 
 def ensure_fresh(force: bool = False, max_age_s: int = REFRESH_S) -> dict[str, Any]:
@@ -381,7 +381,8 @@ def ensure_fresh(force: bool = False, max_age_s: int = REFRESH_S) -> dict[str, A
 
     if offline():
         return {"refreshed": False, "reason": "offline"}
-    if not force and time.monotonic() - _state["synced_at"] < max_age_s:
+    # (Never compare against 0: a freshly booted serverless VM's monotonic clock starts near zero.)
+    if not force and _state["synced_at"] is not None and time.monotonic() - _state["synced_at"] < max_age_s:
         return {"refreshed": False, "reason": "fresh"}
     if not _lock.acquire(blocking=False):
         return {"refreshed": False, "reason": "in-progress"}
