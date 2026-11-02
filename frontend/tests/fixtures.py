@@ -1,10 +1,8 @@
-"""Pre-cached tactical dataset (PRD §1.2).
+"""Test fixtures: a small, clearly fictional operational dataset for the API acceptance tests.
 
-Serves two purposes:
-  1. Zero-downtime fallback when PostgreSQL is unreachable or not configured.
-  2. Seed data for a fresh database (`python -m api._lib.data.seed`).
-
-Timestamps are relative to process start so the demo always looks current.
+This used to be the app's built-in demo dataset. The live app no longer ships any sample data — incidents come
+from public hazard feeds and everything else from real users — so it now lives only here, loaded into the
+in-memory store by tests/test_api.py.
 """
 
 from __future__ import annotations
@@ -302,46 +300,18 @@ MOCK_MESH_EVENTS = [
      "received_at": ago(hours=4), "review_status": "REVIEWED", "promoted_task_id": None},
 ]
 
-MOCK_HOSPITALS = [
-    {"id": "hsp_aiims_bbsr", "name": "AIIMS Bhubaneswar", "kind": "Super-specialty hospital",
-     "address": "Sijua, Patrapada, Bhubaneswar, Odisha 751019", "lat": 20.2285, "lng": 85.8189,
-     "icu_beds": 142, "icu_available": 31, "phone": "0674-2476789", "trauma_level": "Level 1"},
-    {"id": "hsp_scb_ctc", "name": "SCB Medical College", "kind": "Government medical college",
-     "address": "Manglabag, Cuttack, Odisha 753007", "lat": 20.4730, "lng": 85.8890,
-     "icu_beds": 120, "icu_available": 12, "phone": "0671-2414080", "trauma_level": "Level 1"},
-    {"id": "hsp_gmch", "name": "Gauhati Medical College", "kind": "Government medical college",
-     "address": "Bhangagarh, Guwahati, Assam 781032", "lat": 26.1557, "lng": 91.7610,
-     "icu_beds": 96, "icu_available": 8, "phone": "0361-2529457", "trauma_level": "Level 1"},
-    {"id": "hsp_wims", "name": "DM WIMS Wayanad", "kind": "Medical college hospital",
-     "address": "Meppadi, Wayanad, Kerala 673577", "lat": 11.5900, "lng": 76.1400,
-     "icu_beds": 40, "icu_available": 6, "phone": "04936-287000", "trauma_level": "Level 2"},
-    {"id": "hsp_aiims_del", "name": "AIIMS New Delhi", "kind": "Super-specialty hospital",
-     "address": "Ansari Nagar, New Delhi 110029", "lat": 28.5672, "lng": 77.2100,
-     "icu_beds": 310, "icu_available": 44, "phone": "011-26588500", "trauma_level": "Level 1"},
-]
 
-MOCK_SHELTERS = [
-    {"id": "shl_paradip_4", "name": "Paradip Port Shelter #4", "address": "Near Port Authority campus, Paradip",
-     "lat": 20.2644, "lng": 86.6705, "capacity": 850, "occupancy": 320, "facilities": ["Solar backup", "Medical post"],
-     "incharge": "Capt. Sharma"},
-    {"id": "shl_puri_mcs", "name": "Puri Multipurpose Cyclone Shelter", "address": "Baliapanda, Puri",
-     "lat": 19.7980, "lng": 85.8170, "capacity": 1200, "occupancy": 940, "facilities": ["Kitchen", "Generator"],
-     "incharge": "BDO Puri Sadar"},
-    {"id": "shl_ghy_dispur", "name": "Dispur Relief Camp", "address": "Dispur Higher Secondary School, Guwahati",
-     "lat": 26.1433, "lng": 91.7898, "capacity": 600, "occupancy": 512, "facilities": ["Drinking water", "Medical post"],
-     "incharge": "Circle Officer Dispur"},
-    {"id": "shl_kalpetta", "name": "Kalpetta Government School Camp", "address": "Kalpetta, Wayanad",
-     "lat": 11.6085, "lng": 76.0830, "capacity": 400, "occupancy": 188, "facilities": ["Kitchen"],
-     "incharge": "Tahsildar Vythiri"},
-]
+SYSTEM_USER = {
+    "id": SYSTEM_USER_ID, "name": "Test Command", "email": "command@test.invalid", "phone": "", "password_hash": None,
+    "role": "INCIDENT_ADMIN", "state_district": "New Delhi", "lat": None, "lng": None, "provider": "system",
+    "google_id": None, "avatar_url": None, "blood_group": None, "emergency_contact": None, "is_verified": True,
+    "onboarded": True, "org_id": "org_ndrf", "profile_data": {}, "muster_code": None, "muster_issued_at": None,
+    "created_at": ago(days=30), "updated_at": ago(days=30),
+}
 
-HOTLINES = [
-    {"label": "National emergency", "number": "112"},
-    {"label": "Ambulance", "number": "108"},
-    {"label": "Fire", "number": "101"},
-    {"label": "Police", "number": "100"},
-    {"label": "Disaster management (NDMA)", "number": "1078"},
-    {"label": "NDRF control room", "number": "011-24363260"},
-    {"label": "Women helpline", "number": "1091"},
-    {"label": "Child helpline", "number": "1098"},
-]
+DATASET = {
+    "users": [SYSTEM_USER], "volunteers": MOCK_VOLUNTEERS,
+    "disasters": [{**d, "source": None, "source_url": None, "external_id": None} for d in MOCK_HAZARDS],
+    "evidence": MOCK_EVIDENCE, "tasks": MOCK_TASKS, "alerts": MOCK_ALERTS, "organizations": MOCK_ORGANIZATIONS,
+    "mesh_nodes": MOCK_MESH_NODES, "mesh_events": MOCK_MESH_EVENTS,
+}

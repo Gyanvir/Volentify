@@ -21,7 +21,7 @@ export function MeshReviewQueue({ disasters, onPromoted }: { disasters: Disaster
   const [review, setReview] = useState<ReviewFilter>('UNREVIEWED');
   const [busy, setBusy] = useState<string | null>(null);
   const q = new URLSearchParams({ limit: '200', ...(disaster && { disaster_id: disaster }), ...(priority && { priority }) });
-  const events = useApi<MeshEvent[]>(`/api/mesh/events?${q}`, { refreshMs: 30_000 });
+  const events = useApi<MeshEvent[]>(`/api/mesh/events?${q}`, { refreshMs: 10_000 });
 
   const rows = useMemo(() => (events.data ?? [])
     .filter((e) => review === 'ALL' || e.review_status === 'UNREVIEWED')

@@ -12,7 +12,7 @@ export default function DisasterIntelligencePage() {
       <PageHeader
         label="Intelligence"
         title="Satellite imagery, official bulletins and report corroboration."
-        lede="Look at the ground from orbit, read the warnings issued by authorities, and collapse a flood of overlapping reports into the incidents behind them."
+        lede="See the ground from orbit with live incidents and field reports on top, read the warnings authorities have in force, and collapse overlapping reports into the incidents behind them."
       />
       <ImageryCatalogue />
       <Bulletins />

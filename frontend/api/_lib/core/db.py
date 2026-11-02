@@ -1,10 +1,14 @@
 """Data access with zero-downtime fallback (PRD §1.2, §9).
 
-`PostgresStore` talks to Supabase PostgreSQL through PgBouncer (transaction mode, port 6543).
-`MemoryStore` serves the pre-cached tactical dataset when the database is not configured or is
+`PostgresStore` talks to the Neon PostgreSQL database through Neon's pooled endpoint (PgBouncer in transaction
+mode). `MemoryStore` holds the same entities in process memory when no database is configured or it is
 unreachable. Both implement the same methods, so routers never branch on the backend.
 
-Reads silently degrade to the fallback store. Writes that must be durable (mesh ingest) raise
+There is no demonstration dataset: incidents come from live public hazard feeds (engines/live.py, mirrored into
+memory as well as the database) and everything else — users, volunteers, missions, alerts, mesh reports — is
+created by real people using the platform. The memory store therefore starts empty.
+
+Reads silently degrade to the memory store. Writes that must be durable (mesh ingest) raise
 `DurabilityUnavailable` instead, so gateways keep their outbox and retry (PRD AT-08).
 """
 
@@ -19,7 +23,6 @@ from typing import Any, Callable, Optional, TypeVar
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from .config import get_settings
-from ..data import fallback as fb
 
 T = TypeVar("T")
 
@@ -44,24 +47,29 @@ class MemoryStore:
 
     def reset(self) -> None:
         with self._lock:
-            self.users: dict[str, dict] = {
-                fb.SYSTEM_USER_ID: {
-                    "id": fb.SYSTEM_USER_ID, "name": "Volentify Command", "email": "command@volentify.org",
-                    "phone": "", "password_hash": None, "role": "INCIDENT_ADMIN", "state_district": "New Delhi",
-                    "lat": None, "lng": None, "provider": "system", "google_id": None, "avatar_url": None,
-                    "blood_group": None, "emergency_contact": None, "is_verified": True, "onboarded": True,
-                    "org_id": "org_ndrf", "profile_data": {}, "muster_code": None, "muster_issued_at": None,
-                    "created_at": fb.ago(days=30), "updated_at": fb.ago(days=30),
-                }
-            }
-            self.volunteers = {v["id"]: copy.deepcopy(v) for v in fb.MOCK_VOLUNTEERS}
-            self.disasters = {d["id"]: copy.deepcopy(d) for d in fb.MOCK_HAZARDS}
-            self.evidence = [copy.deepcopy(e) for e in fb.MOCK_EVIDENCE]
-            self.tasks = {t["id"]: copy.deepcopy(t) for t in fb.MOCK_TASKS}
-            self.alerts = [copy.deepcopy(a) for a in fb.MOCK_ALERTS]
-            self.orgs = [copy.deepcopy(o) for o in fb.MOCK_ORGANIZATIONS]
-            self.mesh_nodes = {n["node_uuid"]: copy.deepcopy(n) for n in fb.MOCK_MESH_NODES}
-            self.mesh_events = {e["event_id"]: copy.deepcopy(e) for e in fb.MOCK_MESH_EVENTS}
+            self.users: dict[str, dict] = {}
+            self.volunteers: dict[str, dict] = {}
+            self.disasters: dict[str, dict] = {}
+            self.evidence: list[dict] = []
+            self.tasks: dict[str, dict] = {}
+            self.alerts: list[dict] = []
+            self.orgs: list[dict] = []
+            self.mesh_nodes: dict[str, dict] = {}
+            self.mesh_events: dict[str, dict] = {}
+            self.cache: dict[str, tuple[float, Any]] = {}
+
+    def load(self, dataset: dict[str, list[dict]]) -> None:
+        """Install a dataset (used by the test suite's fixtures)."""
+        with self._lock:
+            self.users.update({u["id"]: copy.deepcopy(u) for u in dataset.get("users", [])})
+            self.volunteers.update({v["id"]: copy.deepcopy(v) for v in dataset.get("volunteers", [])})
+            self.disasters.update({d["id"]: copy.deepcopy(d) for d in dataset.get("disasters", [])})
+            self.evidence.extend(copy.deepcopy(e) for e in dataset.get("evidence", []))
+            self.tasks.update({t["id"]: copy.deepcopy(t) for t in dataset.get("tasks", [])})
+            self.alerts.extend(copy.deepcopy(a) for a in dataset.get("alerts", []))
+            self.orgs.extend(copy.deepcopy(o) for o in dataset.get("organizations", []))
+            self.mesh_nodes.update({n["node_uuid"]: copy.deepcopy(n) for n in dataset.get("mesh_nodes", [])})
+            self.mesh_events.update({e["event_id"]: copy.deepcopy(e) for e in dataset.get("mesh_events", [])})
 
     # users
     def get_user(self, user_id: str) -> Optional[dict]:
@@ -127,9 +135,35 @@ class MemoryStore:
             return copy.deepcopy(vol)
 
     # disasters & evidence
-    def list_disasters(self) -> list[dict]:
+    def list_disasters(self, include_closed: bool = False) -> list[dict]:
         order = {"CRITICAL": 0, "HIGH": 1, "MODERATE": 2, "LOW": 3}
-        return copy.deepcopy(sorted(self.disasters.values(), key=lambda d: (order[d["severity"]], d["title"])))
+        rows = [d for d in self.disasters.values() if include_closed or d.get("status") != "CLOSED"]
+        return copy.deepcopy(sorted(rows, key=lambda d: (order[d["severity"]], d["title"])))
+
+    def upsert_live(self, rows: list[dict], evidence: list[dict], sources_ok: list[str]) -> None:
+        """Mirror the live feeds: insert/update incidents, append new evidence, close what the feeds dropped."""
+        with self._lock:
+            live_ids = {r["id"] for r in rows}
+            for d in self.disasters.values():
+                if d.get("source") in sources_ok and d.get("status") == "ACTIVE" and d["id"] not in live_ids:
+                    d["status"], d["updated_at"] = "CLOSED", utcnow()
+            for r in rows:
+                existing = self.disasters.get(r["id"])
+                if existing:
+                    existing.update({k: v for k, v in r.items() if k != "created_at"})
+                else:
+                    self.disasters[r["id"]] = copy.deepcopy(r)
+            known = {e["id"] for e in self.evidence}
+            self.evidence.extend(copy.deepcopy(e) for e in evidence if e["id"] not in known)
+
+    def cache_get(self, key: str, max_age_s: Optional[float]) -> Optional[Any]:
+        hit = self.cache.get(key)
+        if not hit or (max_age_s is not None and time.time() - hit[0] > max_age_s):
+            return None
+        return copy.deepcopy(hit[1])
+
+    def cache_put(self, key: str, value: Any) -> None:
+        self.cache[key] = (time.time(), copy.deepcopy(value))
 
     def get_disaster(self, disaster_id: str) -> Optional[dict]:
         d = self.disasters.get(disaster_id) or next(
@@ -266,7 +300,7 @@ _VOL_SELECT = (
     "FROM volunteer_profiles vp JOIN users u ON u.id = vp.user_id")
 _DISASTER_COLS = ("id, code, title, category, severity, lat, lng, location, state, radius_km, polygon_geojson, "
                   "status, affected_pop, summary, wind_speed_kmh, rainfall_mm, surge_meters, org_id, "
-                  "created_at, updated_at")
+                  "created_at, updated_at, source, source_url, external_id")
 _TASK_COLS = ("id, code, title, description, urgency, required_skill, lat, lng, location_name, quantity_needed, "
               "status, disaster_id, created_by_id, assigned_to_id, created_at, updated_at")
 _MESH_COLS = ("id, event_id, origin_node_id, disaster_id, type, priority, payload, lat, lng, observed_at, "
@@ -281,8 +315,9 @@ class PostgresStore:
     def _conn(self):
         import psycopg
         from psycopg.rows import dict_row
-        # prepare_threshold=None: PgBouncer transaction pooling cannot share prepared statements.
-        return psycopg.connect(self.dsn, row_factory=dict_row, connect_timeout=5,
+        # prepare_threshold=None: Neon's pooled endpoint (PgBouncer, transaction mode) cannot share prepared
+        # statements. connect_timeout=10 leaves room for a suspended Neon compute to wake up (typically 0.5–3 s).
+        return psycopg.connect(self.dsn, row_factory=dict_row, connect_timeout=10,
                                prepare_threshold=None, autocommit=True)
 
     @staticmethod
@@ -381,10 +416,59 @@ class PostgresStore:
         return self.get_volunteer_by_user(row["user_id"]) if row else None
 
     # disasters & evidence
-    def list_disasters(self) -> list[dict]:
-        rows = self._all(f"SELECT {_DISASTER_COLS} FROM disasters ORDER BY "
+    def list_disasters(self, include_closed: bool = False) -> list[dict]:
+        where = "" if include_closed else "WHERE status <> 'CLOSED' "
+        rows = self._all(f"SELECT {_DISASTER_COLS} FROM disasters {where}ORDER BY "
                          "array_position(ARRAY['CRITICAL','HIGH','MODERATE','LOW'], severity::text), title")
         return [self._disaster(r) for r in rows]  # type: ignore[misc]
+
+    def upsert_live(self, rows: list[dict], evidence: list[dict], sources_ok: list[str]) -> None:
+        """Upsert live-feed incidents and their evidence in one round trip per statement; close dropped ones."""
+        cols = ", ".join(rows[0]) if rows else ""
+        with self._conn() as conn, conn.transaction():
+            if rows:
+                vals = ", ".join(f"%({k})s" for k in rows[0])
+                updates = ", ".join(f"{k} = EXCLUDED.{k}" for k in rows[0] if k not in {"id", "created_at"})
+                with conn.cursor() as cur:
+                    cur.executemany(f"INSERT INTO disasters ({cols}) VALUES ({vals}) "
+                                    f"ON CONFLICT (id) DO UPDATE SET {updates}", rows)
+            if evidence:
+                ecols = ", ".join(evidence[0])
+                evals = ", ".join(f"%({k})s" for k in evidence[0])
+                with conn.cursor() as cur:
+                    cur.executemany(f"INSERT INTO evidence ({ecols}) VALUES ({evals}) ON CONFLICT (id) DO NOTHING",
+                                    evidence)
+            if sources_ok:
+                conn.execute("UPDATE disasters SET status = 'CLOSED', updated_at = now() WHERE status = 'ACTIVE' "
+                             "AND source = ANY(%s) AND NOT (id = ANY(%s))",
+                             (list(sources_ok), [r["id"] for r in rows]))
+
+    def claim_feed(self, feed: str, max_age_s: int) -> bool:
+        """True when this instance should refresh `feed` now (it was stale and nobody else has claimed it)."""
+        row = self._one("INSERT INTO feed_state (feed, synced_at) VALUES (%s, now()) ON CONFLICT (feed) DO UPDATE "
+                        "SET synced_at = now() WHERE feed_state.synced_at < now() - make_interval(secs => %s) "
+                        "RETURNING feed", (feed, max_age_s))
+        return row is not None
+
+    def mark_feed(self, feed: str, status: dict) -> None:
+        self._one("UPDATE feed_state SET synced_at = now(), status = %s WHERE feed = %s RETURNING feed",
+                  (self._json(status), feed))
+
+    def feed_status(self, feed: str) -> Optional[dict]:
+        return self._one("SELECT feed, synced_at, status FROM feed_state WHERE feed = %s", (feed,))
+
+    def cache_get(self, key: str, max_age_s: Optional[float]) -> Optional[Any]:
+        if max_age_s is None:
+            row = self._one("SELECT payload FROM feed_cache WHERE key = %s", (key,))
+        else:
+            row = self._one("SELECT payload FROM feed_cache WHERE key = %s "
+                            "AND fetched_at > now() - make_interval(secs => %s)", (key, max_age_s))
+        return row["payload"] if row else None
+
+    def cache_put(self, key: str, value: Any) -> None:
+        self._one("INSERT INTO feed_cache (key, payload, fetched_at) VALUES (%s, %s, now()) ON CONFLICT (key) "
+                  "DO UPDATE SET payload = EXCLUDED.payload, fetched_at = now() RETURNING key",
+                  (key, self._json(value)))
 
     def get_disaster(self, disaster_id: str) -> Optional[dict]:
         return self._disaster(self._one(f"SELECT {_DISASTER_COLS} FROM disasters WHERE id = %s OR code = %s",
@@ -504,6 +588,7 @@ def _postgres() -> Optional[PostgresStore]:
         store = PostgresStore(url)
         try:
             bootstrap(store)
+            migrate(store)
         except Exception as exc:  # noqa: BLE001
             if not _is_db_error(exc):
                 raise
@@ -514,7 +599,7 @@ def _postgres() -> Optional[PostgresStore]:
 
 
 def bootstrap(store: PostgresStore) -> bool:
-    """First connection to an empty database: create the schema and load the starting dataset.
+    """First connection to an empty database: create the schema. No sample rows are inserted.
 
     Guarded by a transaction-scoped advisory lock so concurrent serverless instances don't race. Returns True if it
     initialised the database.
@@ -524,14 +609,21 @@ def bootstrap(store: PostgresStore) -> bool:
     with store._conn() as conn:
         if conn.execute("SELECT to_regclass('public.mesh_events') AS t").fetchone()["t"]:
             return False
-        # One transaction with a transaction-scoped lock: safe behind PgBouncer/Neon pooling too.
+        # One transaction with a transaction-scoped lock: safe behind Neon's PgBouncer pooling.
         with conn.transaction():
             conn.execute("SELECT pg_advisory_xact_lock(727274)")
             if conn.execute("SELECT to_regclass('public.mesh_events') AS t").fetchone()["t"]:
                 return False
             conn.execute(seeding.SCHEMA_SQL.read_text())
-            seeding.seed(conn)
             return True
+
+
+def migrate(store: PostgresStore) -> list[str]:
+    """Apply pending migrations once per database (cheap no-op check on every cold start)."""
+    from ..data import migrations
+
+    with store._conn() as conn:
+        return migrations.apply(conn)
 
 
 def _mark_down(exc: Exception) -> None:
@@ -545,6 +637,7 @@ def describe_error(exc: Exception) -> str:
     text = str(exc).strip().splitlines()[0] if str(exc).strip() else ""
     text = re.sub(r"postgres(?:ql)?://\S+", "postgresql://…", text)
     text = re.sub(r"password=\S+", "password=…", text)
+    text = re.sub(r'"[^"]*"', '"…"', text)  # host names and identifiers quoted by libpq (public endpoint)
     return f"{type(exc).__name__}: {text[:200]}" if text else type(exc).__name__
 
 

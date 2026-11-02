@@ -41,7 +41,7 @@ export default function IncidentsIndex() {
       <PageHeader
         label="Incidents"
         title="Active incidents"
-        lede="Every disaster Volentify is tracking, ordered by severity. Open a dossier for the evidence timeline, missions and a live situation briefing."
+        lede="Cyclones, floods, earthquakes, wildfires and other hazards in and around India, pulled every 15 minutes from GDACS, USGS and NASA EONET and ordered by severity. Open a dossier for the evidence timeline, missions and a situation briefing."
         actions={<ButtonLink href="/map" variant="secondary">View on map</ButtonLink>}
         meta={!loading && data ? (
           <p className="text-sm text-stone">
@@ -66,7 +66,9 @@ export default function IncidentsIndex() {
 
         {loading && !data ? <LoadingRows rows={4} />
           : error ? <ErrorState message={error.message} onRetry={reload} />
-          : rows.length === 0 ? (
+          : all.length === 0 ? (
+            <EmptyState title="No active incidents" body="None of the live hazard feeds (GDACS, USGS, NASA EONET) report an active event in and around India right now." />
+          ) : rows.length === 0 ? (
             <EmptyState title="No incidents match these filters" body="Clear a filter to see every active incident."
               action={<button className="link text-sm" onClick={() => { setSeverity(''); setCategory(''); }}>Clear filters</button>} />
           ) : (
@@ -83,6 +85,7 @@ export default function IncidentsIndex() {
                           {d.category}
                         </span>
                         <span className="code">{d.code}</span>
+                        {d.source && <span className="text-xs text-stone">via {d.source}</span>}
                       </div>
                       <h2 className="font-serif text-[1.75rem] leading-tight group-hover:text-ivory">{d.title}</h2>
                       <p className="text-sm text-stone">{d.location}, {d.state}</p>

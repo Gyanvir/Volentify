@@ -106,6 +106,9 @@ class Disaster(APIModel):
     org_id: Optional[str] = None
     created_at: datetime
     updated_at: datetime
+    source: Optional[str] = None
+    source_url: Optional[str] = None
+    external_id: Optional[str] = None
 
 
 class Evidence(APIModel):

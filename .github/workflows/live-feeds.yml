@@ -1,0 +1,23 @@
+name: Live feeds
+
+# Keeps the live hazard feeds warm so visitors rarely wait for a refresh:
+#   every 15 min  →  GET {site}/api/live/refresh   (GDACS, USGS, NASA EONET → Neon; OSM facilities; SACHET)
+# Uses the same VOLENTIFY_URL repository variable as research-collect.yml.
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Refresh live feeds
+        env:
+          SITE: ${{ vars.VOLENTIFY_URL || 'https://volentify.vercel.app' }}
+        run: |
+          curl -fsS --max-time 60 "${SITE%/}/api/live/refresh" | head -c 2000; echo

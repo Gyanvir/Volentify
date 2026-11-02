@@ -8,8 +8,8 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response,
 
 from ..core import db
 from ..core.security import RateLimiter, client_key, current_claims, require_roles, require_session
-from ..data import fallback as fb
-from ..engines import briefing, triage
+from ..data.reference import HOTLINES
+from ..engines import briefing, intel, live, triage
 from ..engines.geo import haversine_km
 from ..schemas import (
     Alert, AlertCreate, AvailabilityUpdate, CitizenReport, CitizenReportResponse, Disaster, Evidence,
@@ -24,8 +24,10 @@ _report_limiter = RateLimiter(limit=6, window_s=60)
 # ─── Disasters ──────────────────────────────────────────────────────────────
 
 @router.get("/disasters", response_model=list[Disaster])
-def list_disasters(response: Response):
-    rows, source = db.read(lambda s: s.list_disasters())
+def list_disasters(response: Response, include_closed: bool = False):
+    """Incidents from the live hazard feeds (GDACS, USGS, NASA EONET), refreshed at most every 15 minutes."""
+    live.ensure_fresh()
+    rows, source = db.read(lambda s: s.list_disasters(include_closed))
     tag(response, source)
     return rows
 
@@ -196,10 +198,30 @@ def list_organizations(response: Response):
     return rows
 
 
+def _cache_get(key: str, max_age_s):
+    try:
+        return db.read(lambda s: s.cache_get(key, max_age_s))[0]
+    except Exception:  # noqa: BLE001 — a cache miss is never an error
+        return None
+
+
+def _cache_put(key: str, value) -> None:
+    try:
+        db.write(lambda s: s.cache_put(key, value))
+    except Exception:  # noqa: BLE001
+        pass
+
+
 @router.get("/resources")
-def emergency_resources():
-    """Hotlines, hospitals with ICU capacity and relief shelters."""
-    return {"hotlines": fb.HOTLINES, "hospitals": fb.MOCK_HOSPITALS, "shelters": fb.MOCK_SHELTERS}
+def emergency_resources(response: Response):
+    """National helplines, plus hospitals and relief shelters mapped in OpenStreetMap around active incidents."""
+    live.ensure_fresh()
+    incidents, source = db.read(lambda s: s.list_disasters())
+    tag(response, source)
+    facilities = intel.relief_facilities(incidents, _cache_get, _cache_put)
+    return {"hotlines": HOTLINES, "hospitals": facilities["hospitals"], "shelters": facilities["shelters"],
+            "mode": facilities["mode"], "fetched_at": facilities.get("fetched_at"),
+            "attribution": "Facility locations © OpenStreetMap contributors (ODbL)"}
 
 
 # ─── Citizen incident reports (web counterpart of mesh field reports) ───────

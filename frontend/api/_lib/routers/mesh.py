@@ -12,7 +12,8 @@ from ..core import db
 from ..core.security import (
     RateLimiter, client_key, current_claims, issue_mesh_token, require_mesh_token, require_roles,
 )
-from ..engines.geo import bbox_around
+from ..engines import live
+from ..engines.geo import bbox_around, haversine_km
 from ..schemas import (
     MeshEvent, MeshEventType, MeshIncident, MeshIngestRequest, MeshIngestResponse, MeshNode, MeshPriority,
     MeshReviewRequest, MeshToken,
@@ -21,6 +22,40 @@ from .common import new_code, new_id, now, tag
 
 router = APIRouter(prefix="/api/mesh", tags=["mesh"])
 _ingest_limiter = RateLimiter(limit=60, window_s=60)
+_public_ingest_limiter = RateLimiter(limit=20, window_s=60)
+
+
+def optional_mesh_token(request: Request) -> Optional[dict]:
+    """Phones upload as soon as they get any internet connection, with or without a gateway token.
+
+    A token (issued from the web dashboard) identifies a verified gateway. Without one the upload is accepted as
+    public field reports — rate-limited per network address and, like every mesh report, shown as unreviewed until
+    command reviews it. A token that is present but invalid is still rejected, so the phone can refresh it.
+    """
+    if not request.headers.get("authorization"):
+        return None
+    return require_mesh_token(request)
+
+
+def _evidence_text(ev) -> str:
+    """Public-safe line for the incident timeline: no free text from sensitive (people/medical) reports."""
+    label = ev.type.replace("_", " ").capitalize()
+    payload = ev.payload if isinstance(ev.payload, dict) else {}
+    parts = [f"Mesh field report — {label}, {ev.priority.lower()} priority"]
+    if ev.type in SENSITIVE_TYPES:
+        count = payload.get("count")
+        if isinstance(count, int):
+            parts.append(f"{'1–5' if count <= 5 else '6+'} people")
+    else:
+        text = payload.get("message") or payload.get("notes")
+        if isinstance(text, str) and text.strip():
+            parts.append(text.strip()[:200])
+        needs = payload.get("needs")
+        if isinstance(needs, list) and needs:
+            parts.append("needs: " + ", ".join(str(n) for n in needs[:6]))
+    if ev.hop_count:
+        parts.append(f"relayed over {ev.hop_count} phone{'s' if ev.hop_count != 1 else ''}")
+    return "; ".join(parts) + "."
 
 # Sensitive event types are summarised for unverified readers (OD-02).
 SENSITIVE_TYPES = {"PERSON_MISSING", "PERSON_TRAPPED", "MEDICAL_EMERGENCY", "PERSON_RESCUED"}
@@ -46,23 +81,44 @@ def gateway_token(node_uuid: Optional[str] = None, claims: dict = Depends(requir
 
 @router.post("/ingest", response_model=MeshIngestResponse)
 def ingest(body: MeshIngestRequest, request: Request, response: Response,
-           token: dict = Depends(require_mesh_token)):
-    _ingest_limiter.check(f"{client_key(request)}:{token.get('sub')}")
+           token: Optional[dict] = Depends(optional_mesh_token)):
+    if token:
+        _ingest_limiter.check(f"{client_key(request)}:{token.get('sub')}")
+    else:
+        _public_ingest_limiter.check(f"public:{client_key(request)}")
     received = now()
 
     def persist(store):
         store.upsert_node(body.gateway_node_id, {"last_lat": body.gateway_lat, "last_lng": body.gateway_lng,
                                                  "battery_level": body.gateway_battery})
         accepted, duplicates = [], []
-        known = {d["id"] for d in store.list_disasters()}
+        disasters = store.list_disasters(include_closed=True)
+        known = {d["id"] for d in disasters}
+        active = [d for d in disasters if d.get("status") == "ACTIVE"]
         for ev in body.events:
             store.upsert_node(ev.origin_node_id, {"last_lat": ev.lat, "last_lng": ev.lng})
+            disaster_id = ev.disaster_id if ev.disaster_id in known else None
+            if disaster_id is None and ev.lat is not None and ev.lng is not None and active:
+                # Field reports become incident data: link to the nearest active incident they fall inside.
+                nearest = min(active, key=lambda d: haversine_km(ev.lat, ev.lng, d["lat"], d["lng"]))
+                if haversine_km(ev.lat, ev.lng, nearest["lat"], nearest["lng"]) <= nearest["radius_km"] * 1.5:
+                    disaster_id = nearest["id"]
             row = {"id": new_id("me"), "event_id": ev.event_id, "origin_node_id": ev.origin_node_id,
-                   "disaster_id": ev.disaster_id if ev.disaster_id in known else None, "type": ev.type, "priority": ev.priority, "payload": ev.payload,
+                   "disaster_id": disaster_id, "type": ev.type, "priority": ev.priority, "payload": ev.payload,
                    "lat": ev.lat, "lng": ev.lng, "observed_at": ev.observed_at, "hop_count": ev.hop_count,
                    "ttl": ev.ttl, "received_at": received, "review_status": "UNREVIEWED",
                    "promoted_task_id": None}
-            (accepted if store.insert_mesh_event(row) else duplicates).append(ev.event_id)
+            if store.insert_mesh_event(row):
+                accepted.append(ev.event_id)
+                if disaster_id:
+                    store.add_evidence({
+                        "id": f"ev_mesh_{ev.event_id.replace('-', '')[:24]}", "disaster_id": disaster_id,
+                        "author_id": None, "source": "Volentify Mesh",
+                        "source_type": "CITIZEN", "claim_text": _evidence_text(ev), "relation": "SUPPORTING",
+                        "confidence": 0.6 if token else 0.5, "language": "en", "created_at": ev.observed_at,
+                    })
+            else:
+                duplicates.append(ev.event_id)
         return accepted, duplicates
 
     try:
@@ -110,6 +166,7 @@ def list_nodes(response: Response):
 @router.get("/incidents", response_model=list[MeshIncident])
 def list_incidents(response: Response):
     """Active incident bounding boxes for offline caching on phones."""
+    live.ensure_fresh()
     rows, source = db.read(lambda s: s.list_disasters())
     tag(response, source)
     return [{"disaster_id": d["id"], "code": d["code"], "title": d["title"], "category": d["category"],

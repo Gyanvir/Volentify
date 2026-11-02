@@ -52,11 +52,11 @@ fun SettingsScreen(vm: MeshViewModel, onClose: () -> Unit) {
 
         Text("Gateway sync", style = MaterialTheme.typography.titleMedium)
         Text(
-            "When this phone has internet it uploads every report it holds. Sign in to Volentify on the web, open your dashboard and copy a gateway token here.",
+            "Whenever this phone gets mobile data or Wi-Fi it uploads every report it holds to the Volentify website automatically. A gateway token (from your web dashboard) is optional: it marks uploads as coming from a verified responder.",
             style = MaterialTheme.typography.bodyMedium,
         )
         OutlinedTextField(server, { server = it }, label = { Text("Server address") }, singleLine = true, colors = colors, modifier = Modifier.fillMaxWidth())
-        OutlinedTextField(token, { token = it }, label = { Text("Gateway token") }, colors = colors, modifier = Modifier.fillMaxWidth(), maxLines = 3)
+        OutlinedTextField(token, { token = it }, label = { Text("Gateway token (optional)") }, colors = colors, modifier = Modifier.fillMaxWidth(), maxLines = 3)
         Button(
             onClick = {
                 vm.settings.serverUrl = server

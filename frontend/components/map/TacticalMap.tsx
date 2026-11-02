@@ -5,7 +5,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import maplibregl, { type GeoJSONSource, type Map as MLMap } from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import {
-  Box, Camera, Crosshair, Download, Eye, Layers, Maximize2, Minimize2, Ruler, Search, SlidersHorizontal, X,
+  Box, Camera, Crosshair, Download, Eye, Layers, Maximize2, Minimize2, Ruler, Satellite, Search, SlidersHorizontal, X,
 } from 'lucide-react';
 import { CATEGORY_HEX, MESH_PRIORITY_HEX, MESH_TYPE_LABEL, SEVERITY_META } from '@/lib/constants';
 import type { Disaster, MeshEvent, MeshEventType, MeshPriority } from '@/lib/types';
@@ -13,7 +13,7 @@ import { circlePolygon, cn, haversineKm } from '@/lib/utils';
 import { SourceTag } from '@/components/ui/DataState';
 import { DetailDrawer, type Selection } from './DetailDrawer';
 import { GodsEyeHUD } from './GodsEyeHUD';
-import { DARK_STYLE_URL, DEM_ATTRIBUTION, DEM_TILES, INDIA_VIEW, RAINVIEWER_INDEX, RASTER_FALLBACK, firstSymbolLayer } from './mapStyle';
+import { DARK_STYLE_URL, DEM_ATTRIBUTION, DEM_TILES, INDIA_VIEW, RAINVIEWER_INDEX, RASTER_FALLBACK, defaultImagery, firstSymbolLayer } from './mapStyle';
 import { useMapData } from './useMapData';
 
 type LayerKey = 'incidents' | 'mesh' | 'nodes' | 'volunteers' | 'missions' | 'hospitals' | 'shelters' | 'radar';
@@ -30,7 +30,16 @@ export interface TacticalMapProps {
   variant?: 'full' | 'embed';
   focusDisasterId?: string;
   className?: string;
+  /** Base map to start on: 'dark' (cartographic) or an imagery layer id such as 'esri-imagery' or 'modis-terra'. */
+  initialBasemap?: string;
+  /** Controlled base map (the Intelligence page's imagery list drives the map through this). */
+  basemap?: string;
+  onBasemapChange?: (id: string) => void;
+  /** Controlled precipitation-radar overlay. */
+  radar?: boolean;
 }
+
+const BASEMAP_DARK = 'dark';
 
 function featureCollection(features: GeoJSON.Feature[]): GeoJSON.FeatureCollection {
   return { type: 'FeatureCollection', features };
@@ -64,7 +73,9 @@ function meshMarker(e: MeshEvent, selected: boolean): HTMLElement {
   return el;
 }
 
-export default function TacticalMap({ variant = 'full', focusDisasterId, className }: TacticalMapProps) {
+export default function TacticalMap({
+  variant = 'full', focusDisasterId, className, initialBasemap, basemap: basemapProp, onBasemapChange, radar,
+}: TacticalMapProps) {
   const full = variant === 'full';
   const data = useMapData();
   const containerRef = useRef<HTMLDivElement>(null);
@@ -77,7 +88,16 @@ export default function TacticalMap({ variant = 'full', focusDisasterId, classNa
   const [layers, setLayers] = useState<Record<LayerKey, boolean>>({
     incidents: true, mesh: true, nodes: full, volunteers: full, missions: full, hospitals: full, shelters: full, radar: false,
   });
-  const [basemap, setBasemap] = useState<string>('dark');
+  const [basemapState, setBasemapState] = useState<string>(initialBasemap ?? BASEMAP_DARK);
+  const basemap = basemapProp ?? basemapState;
+  const setBasemap = useCallback((id: string) => { setBasemapState(id); onBasemapChange?.(id); }, [onBasemapChange]);
+  const [imageryOpacity, setImageryOpacity] = useState(0.95);
+  const imagery = useMemo(() => (data.imagery.length ? data.imagery : defaultImagery()), [data.imagery]);
+  const baseImagery = useMemo(() => imagery.filter((l) => l.tiles.length), [imagery]);
+  const activeImagery = baseImagery.find((l) => l.id === basemap);
+  const lastImagery = useRef<string>(initialBasemap && initialBasemap !== BASEMAP_DARK ? initialBasemap : 'esri-imagery');
+  if (activeImagery) lastImagery.current = activeImagery.id;
+  const toggleSatellite = () => setBasemap(basemap === BASEMAP_DARK ? lastImagery.current : BASEMAP_DARK);
   const [terrain3d, setTerrain3d] = useState(false);
   const [godsEye, setGodsEye] = useState(false);
   const [panel, setPanel] = useState<'layers' | 'filters' | null>(null);
@@ -262,18 +282,32 @@ export default function TacticalMap({ variant = 'full', focusDisasterId, classNa
     if (d) map.jumpTo({ center: [d.lng, d.lat], zoom: d.radius_km > 80 ? 5.8 : 7.5 });
   }, [ready, focusDisasterId, data.disasters]);
 
-  // Basemap imagery.
+  // Controlled radar overlay (Intelligence page).
+  useEffect(() => {
+    if (radar !== undefined) setLayers((l) => (l.radar === radar ? l : { ...l, radar }));
+  }, [radar]);
+
+  // Satellite imagery under the operational layers: incidents, reports, missions and labels stay on top.
   useEffect(() => {
     const map = mapRef.current;
     if (!ready || !map) return;
     if (map.getLayer('imagery')) map.removeLayer('imagery');
     if (map.getSource('imagery')) map.removeSource('imagery');
-    const layer = data.imagery.find((l) => l.id === basemap);
-    if (layer && layer.tiles.length) {
-      map.addSource('imagery', { type: 'raster', tiles: layer.tiles, tileSize: 256, maxzoom: layer.max_zoom, attribution: layer.provider });
-      map.addLayer({ id: 'imagery', type: 'raster', source: 'imagery', paint: { 'raster-opacity': 0.92 } }, map.getLayer('hillshade') ? 'hillshade' : firstSymbolLayer(map.getStyle()));
+    if (activeImagery) {
+      map.addSource('imagery', { type: 'raster', tiles: activeImagery.tiles, tileSize: 256, maxzoom: activeImagery.max_zoom,
+        attribution: activeImagery.provider === 'NASA GIBS' ? 'Imagery: NASA GIBS / ESDIS' : `Imagery: ${activeImagery.provider}` });
+      map.addLayer({ id: 'imagery', type: 'raster', source: 'imagery', paint: { 'raster-opacity': imageryOpacity, 'raster-fade-duration': 200 } },
+        map.getLayer('hillshade') ? 'hillshade' : firstSymbolLayer(map.getStyle()));
+      // Daily composites stop at zoom 9; keep the view useful rather than blank.
+      if (activeImagery.max_zoom < 12 && map.getZoom() > activeImagery.max_zoom + 2) map.easeTo({ zoom: activeImagery.max_zoom + 1, duration: 600 });
     }
-  }, [ready, basemap, data.imagery]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ready, activeImagery]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (ready && map?.getLayer('imagery')) map.setPaintProperty('imagery', 'raster-opacity', imageryOpacity);
+  }, [ready, imageryOpacity]);
 
   // Precipitation radar (RainViewer latest frame).
   useEffect(() => {
@@ -366,6 +400,14 @@ export default function TacticalMap({ variant = 'full', focusDisasterId, classNa
     on ? 'bg-ivory/[0.12] text-ivory' : 'text-sand hover:bg-ivory/[0.06] hover:text-ivory');
   const panelPos = full ? 'top-[7.25rem] sm:left-[21.5rem] sm:top-[4.25rem]' : 'top-[4.25rem]';
   const activeFilters = [filters.disaster, filters.type, filters.priority, filters.ageMin].filter(Boolean).length;
+  const mapQuery = (() => {
+    const q = new URLSearchParams();
+    if (focusDisasterId) q.set('incident', focusDisasterId);
+    if (basemap !== BASEMAP_DARK) q.set('imagery', basemap);
+    if (layers.radar) q.set('radar', '1');
+    const s = q.toString();
+    return s ? `?${s}` : '';
+  })();
 
   return (
     <div ref={shellRef} className={cn('relative isolate overflow-hidden bg-ink', className)}>
@@ -396,7 +438,7 @@ export default function TacticalMap({ variant = 'full', focusDisasterId, classNa
           </div>
         )}
 
-        <div className="glass pointer-events-auto flex items-center gap-0.5 rounded-xl p-1">
+        <div className="glass pointer-events-auto flex max-w-full items-center gap-0.5 overflow-x-auto rounded-xl p-1">
           <button className={toolBtn(panel === 'layers')} onClick={() => setPanel(panel === 'layers' ? null : 'layers')} aria-expanded={panel === 'layers'}>
             <Layers className="h-4 w-4" aria-hidden /><span className="hidden md:inline">Layers</span>
           </button>
@@ -406,6 +448,10 @@ export default function TacticalMap({ variant = 'full', focusDisasterId, classNa
               {activeFilters > 0 && <span className="rounded-full bg-signal px-1.5 text-[0.6875rem] font-semibold text-ink">{activeFilters}</span>}
             </button>
           )}
+          <button className={cn(toolBtn(basemap !== BASEMAP_DARK), 'xl:hidden')} onClick={toggleSatellite} aria-pressed={basemap !== BASEMAP_DARK}
+            title={basemap !== BASEMAP_DARK ? 'Back to the cartographic map' : 'Show satellite imagery under every layer'}>
+            <Satellite className="h-4 w-4" aria-hidden /><span className="hidden sm:inline">Satellite</span>
+          </button>
           <span className="mx-1 h-5 w-px bg-line" aria-hidden />
           <button className={toolBtn(terrain3d)} onClick={() => setTerrain3d((v) => !v)} aria-pressed={terrain3d} title="Toggle 3D terrain">
             <Box className="h-4 w-4" aria-hidden /><span>{terrain3d ? '3D' : '2D'}</span>
@@ -420,7 +466,7 @@ export default function TacticalMap({ variant = 'full', focusDisasterId, classNa
                 <Ruler className="h-4 w-4" aria-hidden />
               </button>
               <button className={toolBtn(false)} onClick={locate} title="Go to my location"><Crosshair className="h-4 w-4" aria-hidden /></button>
-              <button className={toolBtn(false)} onClick={exportPng} title="Download map as PNG"><Download className="h-4 w-4" aria-hidden /></button>
+              <button className={cn(toolBtn(false), 'max-sm:hidden')} onClick={exportPng} title="Download map as PNG"><Download className="h-4 w-4" aria-hidden /></button>
               <button className={toolBtn(false)} onClick={toggleFullscreen} title={fullscreen ? 'Exit full screen' : 'Full screen'}>
                 {fullscreen ? <Minimize2 className="h-4 w-4" aria-hidden /> : <Maximize2 className="h-4 w-4" aria-hidden />}
               </button>
@@ -428,8 +474,19 @@ export default function TacticalMap({ variant = 'full', focusDisasterId, classNa
           )}
         </div>
 
+        {/* Base map switcher: cartographic map or satellite imagery, with every operational layer on top. */}
+        <div className="glass pointer-events-auto hidden max-w-full items-center gap-0.5 overflow-x-auto rounded-xl p-1 xl:flex" role="group" aria-label="Base map">
+          {[{ id: BASEMAP_DARK, short: 'Map' }, ...baseImagery.map((l) => ({ id: l.id, short: l.short ?? l.label }))].map((b) => (
+            <button key={b.id} className={toolBtn(basemap === b.id)} onClick={() => setBasemap(b.id)} aria-pressed={basemap === b.id}
+              title={b.id === BASEMAP_DARK ? 'Cartographic base map' : baseImagery.find((l) => l.id === b.id)?.label}>
+              {b.id === 'esri-imagery' && <Satellite className="h-4 w-4" aria-hidden />}
+              <span className="whitespace-nowrap">{b.short}</span>
+            </button>
+          ))}
+        </div>
+
         {!full && (
-          <Link href={focusDisasterId ? `/map?incident=${focusDisasterId}` : '/map'} className="glass pointer-events-auto ml-auto flex h-11 items-center rounded-xl px-4 text-[0.8125rem] text-ivory hover:bg-ink-800">
+          <Link href={`/map${mapQuery}`} className="glass pointer-events-auto ml-auto flex h-11 items-center rounded-xl px-4 text-[0.8125rem] text-ivory hover:bg-ink-800">
             Open full map
           </Link>
         )}
@@ -439,15 +496,23 @@ export default function TacticalMap({ variant = 'full', focusDisasterId, classNa
       {panel === 'layers' && (
         <div className={cn('glass absolute left-3 z-20 max-h-[calc(100%-9rem)] w-[min(20rem,calc(100%-1.5rem))] animate-fade-up overflow-y-auto rounded-2xl p-4', panelPos)}>
           <p className="mb-2 text-sm text-ivory">Base map</p>
-          <div className="mb-4 grid grid-cols-2 gap-1.5">
-            {[{ id: 'dark', label: 'Cartographic' }, ...data.imagery.filter((l) => l.tiles.length).map((l) => ({ id: l.id, label: l.label }))].map((b) => (
+          <div className="mb-3 grid grid-cols-2 gap-1.5">
+            {[{ id: BASEMAP_DARK, label: 'Cartographic', cadence: 'CARTO Dark Matter' }, ...baseImagery].map((b) => (
               <button key={b.id} onClick={() => setBasemap(b.id)} aria-pressed={basemap === b.id}
                 className={cn('rounded-lg px-2.5 py-2 text-left text-xs ring-1 ring-inset transition-colors',
                   basemap === b.id ? 'bg-ivory/[0.08] text-ivory ring-signal/50' : 'text-sand ring-line hover:ring-line-strong')}>
-                {b.label}
+                <span className="block">{b.label}</span>
+                <span className="block text-[0.6875rem] text-stone">{b.cadence}</span>
               </button>
             ))}
           </div>
+          {activeImagery && (
+            <label className="mb-4 block text-xs text-stone">
+              <span className="mb-1 flex justify-between"><span>Imagery opacity</span><span className="data">{Math.round(imageryOpacity * 100)}%</span></span>
+              <input type="range" min={0.2} max={1} step={0.05} value={imageryOpacity} onChange={(e) => setImageryOpacity(Number(e.target.value))}
+                className="w-full accent-[rgb(255,107,0)]" aria-label="Imagery opacity" />
+            </label>
+          )}
           <p className="mb-2 text-sm text-ivory">Overlays</p>
           <div className="space-y-0.5">
             {(Object.keys(LAYER_LABEL) as LayerKey[]).map((k) => (
@@ -533,6 +598,11 @@ export default function TacticalMap({ variant = 'full', focusDisasterId, classNa
             <span className="flex items-center gap-1.5"><span className="h-2.5 w-2.5 rounded-full bg-info" />Shelter</span>
           </>}
         </div>
+        {activeImagery && (
+          <p className="mt-1.5 text-[0.6875rem] text-stone">
+            {activeImagery.label} · {activeImagery.provider}{activeImagery.date ? ` · ${activeImagery.date} (UTC)` : ''}
+          </p>
+        )}
         {full && <SourceTag source={data.source} className="mt-1.5" />}
       </div>
 

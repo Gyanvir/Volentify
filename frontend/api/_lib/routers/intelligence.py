@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Response
+from fastapi import APIRouter, Query, Response
+from fastapi.concurrency import run_in_threadpool
 
 from ..core import db, research
-from ..engines import briefing, cyclone, dedup, dispatch, intel, surge, triage
+from ..core.security import RateLimiter
+from ..engines import briefing, cyclone, dedup, dispatch, intel, live, surge, triage
 from ..schemas import (
     BriefingRequest, DeduplicatedEvent, DispatchRequest, DispatchResult, MatchRequest, NearbyRequest,
     PredictionRequest, PredictionResponse, RankedMatch, RawReport, SituationBriefing, TriageRequest,
@@ -14,6 +16,7 @@ from ..schemas import (
 from .common import tag
 
 router = APIRouter(prefix="/api", tags=["intelligence"])
+_refresh_limiter = RateLimiter(limit=30, window_s=3600)
 
 
 @router.post("/predict", response_model=PredictionResponse)
@@ -92,5 +95,40 @@ def imagery_layers():
 
 
 @router.get("/bhuvan/bulletins")
-async def bulletins():
-    return await intel.sachet_bulletins()
+async def bulletins(limit: int = Query(40, ge=1, le=200)):
+    """Official CAP warnings in force (NDMA SACHET), newest first; expired warnings are removed."""
+    return await intel.sachet_bulletins(limit=limit)
+
+
+# ─── Live feeds ─────────────────────────────────────────────────────────────
+
+@router.api_route("/live/refresh", methods=["GET", "POST"])
+async def live_refresh():
+    """Refresh the live hazard feeds if they are more than two minutes old, then warm the facility cache.
+
+    Called every 15 minutes by .github/workflows/live-feeds.yml so visitors rarely wait for a refresh.
+    """
+    _refresh_limiter.check("live-refresh")
+    report = await run_in_threadpool(live.ensure_fresh, False, 120)
+    incidents, _ = await run_in_threadpool(db.read, lambda s: s.list_disasters())
+    from .entities import _cache_get, _cache_put
+    facilities = await run_in_threadpool(intel.relief_facilities, incidents, _cache_get, _cache_put)
+    bulletins = await intel.sachet_bulletins(limit=1)
+    return {**report, "active_incidents": len(incidents), "facilities_mode": facilities["mode"],
+            "hospitals": len(facilities["hospitals"]), "shelters": len(facilities["shelters"]),
+            "bulletins_mode": bulletins["mode"]}
+
+
+@router.get("/live/status")
+def live_status():
+    """When the hazard feeds were last refreshed and how each source answered."""
+    pg = db._postgres()
+    stored = None
+    if pg is not None:
+        try:
+            stored = pg.feed_status("hazards")
+        except Exception as exc:  # noqa: BLE001
+            if not db._is_db_error(exc):
+                raise
+    return {"this_instance": live.last_sync(), "database": stored, "refresh_interval_s": live.REFRESH_S,
+            "sources": list(live.SOURCES), "region": live.REGION}

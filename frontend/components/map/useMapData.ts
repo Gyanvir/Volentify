@@ -3,9 +3,9 @@
 import { useApi } from '@/lib/api';
 import type { DataSource, Disaster, ImageryLayer, MeshEvent, MeshNode, Resources, Task, Volunteer } from '@/lib/types';
 
-const REFRESH_MS = 30_000;
+const REFRESH_MS = 10_000;
 
-/** Everything the tactical map renders. Mesh telemetry refreshes every 30 s. */
+/** Everything the tactical map renders. Mesh reports and nodes refresh every 10 s (unchanged responses don't redraw). */
 export function useMapData() {
   const disasters = useApi<Disaster[]>('/api/disasters', { refreshMs: 120_000 });
   const mesh = useApi<MeshEvent[]>('/api/mesh/events?limit=500', { refreshMs: REFRESH_MS });
@@ -20,7 +20,9 @@ export function useMapData() {
     disasters: disasters.data ?? [],
     mesh: mesh.data ?? [],
     nodes: nodes.data ?? [],
-    volunteers: volunteers.data ?? [],
+    // Volunteers who never shared a location are stored at the onboarding placeholder (India's centroid); don't
+    // plot them there as if they were really in Madhya Pradesh.
+    volunteers: (volunteers.data ?? []).filter((v) => !(v.lat === 20.59 && v.lng === 78.96)),
     tasks: tasks.data ?? [],
     hospitals: resources.data?.hospitals ?? [],
     shelters: resources.data?.shelters ?? [],

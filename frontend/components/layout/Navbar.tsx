@@ -17,7 +17,7 @@ const PRIMARY = [
 ];
 const INTELLIGENCE = [
   { href: '/predictions', label: 'Forecasts', blurb: 'Storm-surge model and multilingual triage' },
-  { href: '/disaster-intelligence', label: 'Satellite & bulletins', blurb: 'Imagery layers and NDMA CAP feed' },
+  { href: '/disaster-intelligence', label: 'Satellite & bulletins', blurb: 'Satellite imagery on the tactical map, NDMA warnings' },
   { href: '/analytics', label: 'Analytics', blurb: 'Operational picture across incidents' },
 ];
 

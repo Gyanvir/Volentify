@@ -3,9 +3,9 @@
 import dynamic from 'next/dynamic';
 import Link from 'next/link';
 import { useEffect, useState } from 'react';
-import { CheckCircle2, CircleAlert, Copy, MapPin } from 'lucide-react';
+import { CheckCircle2, CircleAlert, Copy, ExternalLink, MapPin } from 'lucide-react';
 import { api, ApiError, useApi } from '@/lib/api';
-import { CATEGORY_HEX } from '@/lib/constants';
+import { CATEGORY_HEX, SOURCE_LABEL } from '@/lib/constants';
 import type { Alert, Briefing, Dossier as DossierData, Evidence, Facility, Prediction, Task } from '@/lib/types';
 import { cn, formatCoord, formatDateTime, pct, timeAgo, titleCase } from '@/lib/utils';
 import { Pill, SeverityBadge } from '@/components/ui/Badge';
@@ -262,6 +262,14 @@ export default function Dossier({ id }: { id: string }) {
           <span>Updated {timeAgo(d.updated_at)}</span>
         </div>
         <p className="mt-8 max-w-3xl text-[1.0625rem] leading-relaxed text-sand">{d.summary}</p>
+        {d.source && (
+          <p className="mt-3 text-sm text-stone">
+            Source: {d.source_url
+              ? <a href={d.source_url} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-sand hover:text-ivory">{SOURCE_LABEL[d.source] ?? d.source}<ExternalLink className="h-3.5 w-3.5" aria-hidden /></a>
+              : SOURCE_LABEL[d.source] ?? d.source}
+            {' '}· first reported {formatDateTime(d.created_at)}
+          </p>
+        )}
 
         <div className="mt-10 grid grid-cols-2 gap-x-8 gap-y-8 border-t border-line pt-8 sm:grid-cols-3 lg:grid-cols-5">
           <Stat label="Sustained wind" value={d.wind_speed_kmh != null ? <>{d.wind_speed_kmh}<span className="font-sans text-base text-stone"> km/h</span></> : '—'} />

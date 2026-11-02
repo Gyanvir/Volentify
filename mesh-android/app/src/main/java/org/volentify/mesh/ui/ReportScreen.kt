@@ -1,8 +1,12 @@
 package org.volentify.mesh.ui
 
+import android.content.ActivityNotFoundException
+import android.content.Intent
+import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
@@ -11,7 +15,9 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
@@ -23,24 +29,45 @@ import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import org.volentify.mesh.data.EventType
 import org.volentify.mesh.data.Priority
+import org.volentify.mesh.location.Fix
+import org.volentify.mesh.location.LocationProvider
+import org.volentify.mesh.location.LocationStatus
 import org.volentify.mesh.ui.theme.Palette
 
 private val PEOPLE_TYPES = setOf(EventType.PERSON_TRAPPED, EventType.PERSON_MISSING, EventType.PERSON_RESCUED, EventType.MEDICAL_EMERGENCY)
+private const val ACQUIRE_TIMEOUT_MS = 25_000L
+private const val SAVE_WAIT_MS = 8_000L
 
+/**
+ * @param onRequestLocation asks Android for location permission (or opens app settings when it was denied for good).
+ * @param permissionVersion changes whenever a permission request returns, so the location row re-checks.
+ */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-fun ReportScreen(vm: MeshViewModel, onClose: () -> Unit) {
+fun ReportScreen(vm: MeshViewModel, onClose: () -> Unit, onRequestLocation: () -> Unit, permissionVersion: Int) {
     var type by remember { mutableStateOf(EventType.PERSON_TRAPPED) }
     var priority by remember { mutableStateOf(Priority.HIGH) }
     var count by remember { mutableStateOf("") }
@@ -49,6 +76,43 @@ fun ReportScreen(vm: MeshViewModel, onClose: () -> Unit) {
     val incidents = remember { vm.incidents() }
     var incident by remember { mutableStateOf(incidents.firstOrNull()?.id) }
     var saving by remember { mutableStateOf(false) }
+    var waitingForGps by remember { mutableStateOf(false) }
+
+    // ─── Location: start as soon as the screen opens so the fix is ready by the time the form is filled ───
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var locStatus by remember { mutableStateOf(LocationProvider.status(context)) }
+    var fix by remember { mutableStateOf<Fix?>(null) }
+    var acquiring by remember { mutableStateOf(false) }
+    var attempt by remember { mutableStateOf(0) }
+
+    LaunchedEffect(attempt, permissionVersion) {
+        locStatus = LocationProvider.status(context)
+        if (locStatus != LocationStatus.Ready) {
+            acquiring = false
+            return@LaunchedEffect
+        }
+        acquiring = true
+        val result = LocationProvider.current(context, ACQUIRE_TIMEOUT_MS) { progress -> fix = progress }
+        if (result != null) fix = result
+        // Deliberately not in a finally: a cancelled run has already been replaced by a newer one (key change), and
+        // its late cleanup would otherwise clear the flag while the new run is still acquiring.
+        acquiring = false
+    }
+
+    // Coming back from the permission dialog or the location settings screen: look again.
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        var first = true
+        val observer = LifecycleEventObserver { _, event ->
+            if (event != Lifecycle.Event.ON_RESUME) return@LifecycleEventObserver
+            if (first) { first = false; return@LifecycleEventObserver } // replayed when the observer is added
+            val now = LocationProvider.status(context)
+            if (now != locStatus || (fix == null && !acquiring)) attempt += 1
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
 
     Column(
         Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp),
@@ -59,6 +123,18 @@ fun ReportScreen(vm: MeshViewModel, onClose: () -> Unit) {
             TextButton(onClick = onClose) { Text("Cancel", color = Palette.Sand) }
         }
         Text("Saved on this phone first. Works with no signal.", style = MaterialTheme.typography.bodySmall)
+
+        LocationRow(
+            status = locStatus, fix = fix, acquiring = acquiring, masked = vm.settings.maskLocation,
+            onAllow = onRequestLocation,
+            onTurnOn = {
+                try {
+                    context.startActivity(Intent(android.provider.Settings.ACTION_LOCATION_SOURCE_SETTINGS))
+                } catch (_: ActivityNotFoundException) {
+                }
+            },
+            onRetry = { attempt += 1 },
+        )
 
         Label("What is happening")
         FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -94,15 +170,60 @@ fun ReportScreen(vm: MeshViewModel, onClose: () -> Unit) {
                     if (needs.isNotBlank()) put("needs", needs.split(',').map { it.trim() }.filter { it.isNotEmpty() })
                     if (notes.isNotBlank()) put("notes", notes.trim())
                 }
-                vm.createReport(type, priority, details, incident) { onClose() }
+                scope.launch {
+                    if (fix == null && acquiring) {
+                        // Give the GPS a few more seconds, then save without it rather than keep the user waiting.
+                        waitingForGps = true
+                        withTimeoutOrNull(SAVE_WAIT_MS) { snapshotFlow { fix != null || !acquiring }.first { it } }
+                        waitingForGps = false
+                    }
+                    vm.createReport(type, priority, details, incident, fix) { onClose() }
+                }
             },
             enabled = !saving,
             modifier = Modifier.fillMaxWidth().height(56.dp),
             shape = RoundedCornerShape(50),
             colors = ButtonDefaults.buttonColors(containerColor = Palette.Signal, contentColor = Palette.Ink),
-        ) { Text(if (saving) "Saving…" else "Save report", fontSize = 16.sp) }
+        ) { Text(if (waitingForGps) "Waiting for GPS…" else if (saving) "Saving…" else "Save report", fontSize = 16.sp) }
     }
 }
+
+@Composable
+private fun LocationRow(
+    status: LocationStatus, fix: Fix?, acquiring: Boolean, masked: Boolean,
+    onAllow: () -> Unit, onTurnOn: () -> Unit, onRetry: () -> Unit,
+) {
+    val (dot, title, detail, action) = when {
+        status == LocationStatus.NoPermission -> LocationUi(Palette.High, "Location permission needed",
+            "Reports save without GPS until you allow it", "Allow" to onAllow)
+        status == LocationStatus.ServicesOff -> LocationUi(Palette.High, "Location is off",
+            "Turn on location so responders can find this report", "Turn on" to onTurnOn)
+        fix != null -> LocationUi(Palette.Low,
+            fix.accuracyRounded?.let { "Location ±$it m" } ?: "Location found",
+            buildString {
+                append(if (acquiring) "Improving accuracy…" else "Attached to this report")
+                if (masked) append(" · shifted up to 500 m (Settings)")
+            }, null)
+        acquiring -> LocationUi(Palette.Moderate, "Getting your location…",
+            "Works best outdoors or near a window", null)
+        else -> LocationUi(Palette.Stone, "No fix yet",
+            "The report can still be saved without GPS", "Retry" to onRetry)
+    }
+    Row(
+        Modifier.fillMaxWidth().border(1.dp, Palette.Line, RoundedCornerShape(14.dp)).padding(horizontal = 14.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Box(Modifier.size(8.dp).background(dot, CircleShape))
+        Column(Modifier.weight(1f)) {
+            Text(title, color = Palette.Ivory, fontSize = 14.sp)
+            Text(detail, style = MaterialTheme.typography.bodySmall)
+        }
+        action?.let { (label, onClick) -> TextButton(onClick = onClick) { Text(label, color = Palette.Signal) } }
+    }
+}
+
+private data class LocationUi(val dot: Color, val title: String, val detail: String, val action: Pair<String, () -> Unit>?)
 
 @Composable
 private fun Label(text: String) = Text(text, style = MaterialTheme.typography.titleMedium)
