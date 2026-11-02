@@ -18,7 +18,7 @@ from fastapi.responses import JSONResponse  # noqa: E402
 from api._lib.core import db  # noqa: E402
 from api._lib.core.config import get_settings  # noqa: E402
 from api._lib.core.security import RateLimiter  # noqa: E402
-from api._lib.engines import gemini, surge, triage  # noqa: E402
+from api._lib.engines import gemini, live, surge, triage  # noqa: E402
 from api._lib.routers import auth, entities, intelligence, mesh, research  # noqa: E402
 
 VERSION = "3.5.0"
@@ -59,6 +59,7 @@ def health(deep: bool = False, gemini_model: str | None = None):
     }
     if database == "DEGRADED":
         body["database_error"] = db.last_error()
+    body["live_feeds"] = live.last_sync()
     settings = get_settings()
     # Which variables the deployment is actually using — names and sources only, never values.
     body["configuration"] = {

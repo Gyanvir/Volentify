@@ -50,6 +50,11 @@ export const MESH_TYPE_LABEL: Record<MeshEventType, string> = {
 };
 
 export const CATEGORY_HEX: Record<string, string> = {
-  Cyclone: '#ff5a4e', Flood: '#8fb3d9', Landslide: '#d4b483', Wildfire: '#ff9a3c', Heatwave: '#e9c46a',
-  Earthquake: '#c9a2e8',
+  Cyclone: '#ff5a4e', Storm: '#ff7a6e', Flood: '#8fb3d9', Landslide: '#d4b483', Wildfire: '#ff9a3c', Heatwave: '#e9c46a',
+  Earthquake: '#c9a2e8', Volcano: '#e07a5f', Drought: '#c8a165', 'Dust storm': '#b8a58a',
+};
+
+/** Where live incidents come from; shown wherever an incident's provenance is displayed. */
+export const SOURCE_LABEL: Record<string, string> = {
+  GDACS: 'GDACS · EC Joint Research Centre & UN OCHA', USGS: 'USGS Earthquake Hazards Program', 'NASA EONET': 'NASA Earth Observatory (EONET)',
 };

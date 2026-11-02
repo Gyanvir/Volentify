@@ -6,6 +6,13 @@ import androidx.room.OnConflictStrategy
 import androidx.room.Query
 import kotlinx.coroutines.flow.Flow
 
+/** Relay order: unconfirmed first (they still need a gateway), then priority, newest first. */
+private const val RELAYABLE_SQL =
+    "SELECT * FROM mesh_events WHERE ttl > 0 AND status != 'FAILED' ORDER BY " +
+        "CASE WHEN status = 'SERVER_CONFIRMED' THEN 1 ELSE 0 END, " +
+        "CASE priority WHEN 'CRITICAL' THEN 0 WHEN 'HIGH' THEN 1 WHEN 'MEDIUM' THEN 2 ELSE 3 END, " +
+        "observedAt DESC"
+
 @Dao
 interface MeshDao {
     /** Returns -1 when the eventId already exists — the stable deduplication rule (FR-06). */
@@ -18,8 +25,19 @@ interface MeshDao {
     @Query("SELECT COUNT(*) FROM mesh_events WHERE status != 'SERVER_CONFIRMED' AND status != 'FAILED'")
     fun observePendingCount(): Flow<Int>
 
-    @Query("SELECT * FROM mesh_events WHERE ttl > 0 AND status != 'FAILED' ORDER BY CASE priority WHEN 'CRITICAL' THEN 0 WHEN 'HIGH' THEN 1 WHEN 'MEDIUM' THEN 2 ELSE 3 END, observedAt DESC LIMIT :limit")
+    @Query(RELAYABLE_SQL + " LIMIT :limit")
     suspend fun relayable(limit: Int): List<MeshEvent>
+
+    /**
+     * Live relay queue for the BLE service. Unconfirmed reports go first (they still need to reach a gateway),
+     * then by priority, newest first. Emits again whenever a report is created, received or changes status.
+     */
+    @Query(RELAYABLE_SQL + " LIMIT :limit")
+    fun observeRelayable(limit: Int): Flow<List<MeshEvent>>
+
+    /** Most recent event ids held on this phone (any status) — advertised to peers as the "have" digest. */
+    @Query("SELECT eventId FROM mesh_events ORDER BY receivedAt DESC LIMIT :limit")
+    suspend fun recentIds(limit: Int): List<String>
 
     @Query("SELECT * FROM mesh_events WHERE status IN ('QUEUED', 'RELAYED', 'SYNCING') ORDER BY observedAt ASC LIMIT :limit")
     suspend fun outbox(limit: Int): List<MeshEvent>
@@ -35,6 +53,9 @@ interface MeshDao {
 
     @Query("UPDATE mesh_events SET relayCount = relayCount + 1, lastRelayAt = :now, status = CASE WHEN status = 'QUEUED' THEN 'RELAYED' ELSE status END WHERE eventId = :id")
     suspend fun markRelayed(id: String, now: Long)
+
+    @Query("UPDATE mesh_events SET relayCount = relayCount + 1, lastRelayAt = :now, status = CASE WHEN status = 'QUEUED' THEN 'RELAYED' ELSE status END WHERE eventId IN (:ids)")
+    suspend fun markRelayedAll(ids: List<String>, now: Long)
 
     /** Unsent reports return to the queue after an interrupted upload. */
     @Query("UPDATE mesh_events SET status = 'QUEUED' WHERE status = 'SYNCING'")

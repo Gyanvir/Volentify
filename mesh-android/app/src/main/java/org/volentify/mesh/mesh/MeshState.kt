@@ -3,6 +3,7 @@ package org.volentify.mesh.mesh
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 
 /** Live relay status for the UI. */
 object MeshState {
@@ -18,7 +19,8 @@ object MeshState {
     private val state = MutableStateFlow(Snapshot())
     val snapshot: StateFlow<Snapshot> = state.asStateFlow()
 
+    /** Atomic: relay sessions and inbound writes update the counters concurrently from several threads. */
     fun update(transform: (Snapshot) -> Snapshot) {
-        state.value = transform(state.value)
+        state.update(transform)
     }
 }

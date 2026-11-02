@@ -39,9 +39,9 @@ export function EmptyState({ title, body, action, className }: { title: string; 
 }
 
 const SOURCE_LABEL: Record<DataSource, { text: string; tone: string; title: string }> = {
-  database: { text: 'Live database', tone: 'text-low', title: 'Served from the operational PostgreSQL database' },
-  fallback: { text: 'Cached dataset', tone: 'text-moderate', title: 'Database unreachable — showing the pre-cached tactical dataset' },
-  memory: { text: 'Demo dataset', tone: 'text-stone', title: 'No database configured — showing the built-in demonstration dataset' },
+  database: { text: 'Live database', tone: 'text-low', title: 'Served from the operational Neon PostgreSQL database' },
+  fallback: { text: 'Database offline', tone: 'text-moderate', title: 'Database unreachable — showing live hazard feeds only; saved records will return when it reconnects' },
+  memory: { text: 'Not saved', tone: 'text-stone', title: 'No database connected — live hazard feeds are shown, but nothing created here is stored' },
   request: { text: 'Custom input', tone: 'text-stone', title: 'Computed from the data you supplied' },
 };
 

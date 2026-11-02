@@ -10,11 +10,12 @@ from datetime import datetime
 from typing import Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import PlainTextResponse
 
 from ..core import db, research
 from ..core.security import RateLimiter, require_roles
-from ..engines import cyclone, intel
+from ..engines import cyclone, intel, live
 
 router = APIRouter(prefix="/api/research", tags=["research"])
 _collect_limiter = RateLimiter(limit=4, window_s=3600)
@@ -43,8 +44,9 @@ async def collect():
     """Called on a schedule (GitHub Actions, every 3 hours): pull live feeds and archive a platform snapshot."""
     _collect_limiter.check("collect")
     feed = await intel.sachet_bulletins(limit=200)  # live items are archived inside sachet_bulletins
+    hazards = await run_in_threadpool(live.ensure_fresh)
     card = cyclone.model_card()
-    recorded = {"cap_feed_mode": feed["mode"], "cap_items_seen": len(feed["items"])}
+    recorded = {"cap_feed_mode": feed["mode"], "cap_items_seen": len(feed["items"]), "hazard_feeds": hazards}
     if card:
         recorded["model_version_new"] = bool(research.record(
             "model_version", card.get("name", "cyclone"), card, ref=f'{card.get("name")}@{card.get("version")}'))

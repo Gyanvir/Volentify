@@ -18,6 +18,7 @@ import org.volentify.mesh.data.MeshDatabase
 import org.volentify.mesh.data.MeshEvent
 import org.volentify.mesh.data.Priority
 import org.volentify.mesh.data.Settings
+import org.volentify.mesh.location.Fix
 import org.volentify.mesh.location.LocationProvider
 import org.volentify.mesh.mesh.BleMeshService
 import org.volentify.mesh.sync.GatewaySync
@@ -25,6 +26,7 @@ import org.volentify.mesh.sync.GatewaySync
 data class Incident(val id: String, val title: String, val category: String)
 
 const val MAX_MESSAGE = 500
+private const val MESSAGE_FIX_TIMEOUT_MS = 5_000L
 
 class MeshViewModel(app: Application) : AndroidViewModel(app) {
     val settings = Settings(app)
@@ -41,10 +43,15 @@ class MeshViewModel(app: Application) : AndroidViewModel(app) {
     fun sendMessage(text: String, priority: Priority) {
         val body = text.trim().take(MAX_MESSAGE)
         if (body.isEmpty()) return
-        createReport(
-            EventType.DISASTER_STATUS, priority,
-            mapOf("message" to body, "from" to settings.displayName), disasterId = null,
-        ) {}
+        viewModelScope.launch {
+            // Best-effort position (a few seconds at most) so the message lands on the website's map and is linked
+            // to the incident it was sent from once any phone carrying it reaches the internet.
+            val fix = LocationProvider.current(getApplication(), MESSAGE_FIX_TIMEOUT_MS)
+            createReport(
+                EventType.DISASTER_STATUS, priority,
+                mapOf("message" to body, "from" to settings.displayName), disasterId = null, fix = fix,
+            ) {}
+        }
     }
 
     private val _message = MutableStateFlow<String?>(null)
@@ -61,19 +68,26 @@ class MeshViewModel(app: Application) : AndroidViewModel(app) {
         emptyList()
     }
 
-    fun createReport(type: EventType, priority: Priority, details: Map<String, Any>, disasterId: String?, onDone: () -> Unit) {
+    /** Saves a report with the position the report screen already acquired ([fix] is null without GPS). */
+    fun createReport(type: EventType, priority: Priority, details: Map<String, Any>, disasterId: String?, fix: Fix? = null, onDone: () -> Unit) {
         viewModelScope.launch {
             try {
-                val coords = LocationProvider.current(getApplication(), settings.maskLocation)
+                val masked = settings.maskLocation
+                val position = fix?.let { if (masked) it.masked() else it }
+                val payload = JSONObject(details)
+                if (fix != null) {
+                    if (masked) payload.put("location_masked", true)
+                    else fix.accuracyRounded?.let { payload.put("gps_accuracy_m", it) }
+                }
                 val event = Envelope.newEvent(
                     originNodeId = settings.nodeId, type = type, priority = priority,
-                    payload = JSONObject(details), lat = coords?.first, lng = coords?.second,
+                    payload = payload, lat = position?.lat, lng = position?.lng,
                     disasterId = disasterId, now = System.currentTimeMillis(),
                 )
                 dao.insert(event)
                 GatewaySync.requestSoon(getApplication())
-                _message.value = if (coords == null) "Saved locally without GPS — it will relay to nearby phones"
-                else "Saved locally — it will relay to nearby phones and sync when online"
+                _message.value = if (position == null) "Saved locally without GPS — it will relay to nearby phones"
+                else "Saved locally with location — it will relay to nearby phones and sync when online"
                 onDone()
             } catch (e: IllegalArgumentException) {
                 _message.value = e.message

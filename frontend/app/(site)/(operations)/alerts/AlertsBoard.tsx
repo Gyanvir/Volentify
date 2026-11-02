@@ -13,10 +13,12 @@ import { ButtonLink } from '@/components/ui/Button';
 import { EmptyState, ErrorState, LoadingRows, SourceTag } from '@/components/ui/DataState';
 import { PageHeader, Section } from '@/components/ui/Page';
 import { FilterChips } from '@/components/operations/FilterChips';
+import { FeedPill, OfficialWarnings, useOfficialWarnings } from '@/components/operations/OfficialWarnings';
 
 export default function AlertsBoard() {
   const { user } = useSession();
   const { data, error, loading, source, reload } = useApi<Alert[]>('/api/alerts', { refreshMs: 60_000 });
+  const official = useOfficialWarnings(60);
   const [category, setCategory] = useState('');
   const [level, setLevel] = useState<Severity | ''>('');
 
@@ -33,13 +35,13 @@ export default function AlertsBoard() {
       <PageHeader
         label="Public alerts"
         title="What to do, where, right now"
-        lede="Emergency advisories issued by incident command. If an alert covers your area, follow its advice first and call 112 if anyone is in danger."
+        lede="Advisories broadcast by Volentify incident command, and the official warnings in force from IMD, CWC, INCOIS and state authorities. If one covers your area, follow its advice first and call 112 if anyone is in danger."
         actions={canBroadcast
           ? <ButtonLink href="/agency"><Megaphone className="h-4 w-4" aria-hidden />Broadcast an alert</ButtonLink>
           : <ButtonLink href="tel:112" variant="danger">Call 112</ButtonLink>}
         meta={<SourceTag source={source} />}
       />
-      <Section className="pt-0">
+      <Section className="pt-0" title="Volentify advisories" description="Broadcast by verified incident commanders on this platform.">
         <div className="mb-8 flex flex-col gap-3 border-y border-line py-4 lg:flex-row lg:items-center lg:gap-8">
           <FilterChips<Severity | ''> label="Level" value={level} onChange={setLevel} options={[
             { value: '', label: 'All' },
@@ -53,7 +55,9 @@ export default function AlertsBoard() {
 
         {loading && !data ? <LoadingRows rows={4} />
           : error ? <ErrorState message={error.message} onRetry={reload} />
-          : alerts.length === 0 ? (
+          : all.length === 0 ? (
+            <EmptyState title="No advisories broadcast" body="Incident command has not issued a Volentify advisory. Check the official warnings below." />
+          ) : alerts.length === 0 ? (
             <EmptyState title="No alerts match these filters" body="There are no advisories at this level or for this hazard right now." />
           ) : (
             <ul className="space-y-5">
@@ -83,6 +87,10 @@ export default function AlertsBoard() {
               ))}
             </ul>
           )}
+      </Section>
+      <Section title="Official warnings in force" description="Common Alerting Protocol messages published through NDMA SACHET. Expired warnings are removed automatically."
+        actions={<FeedPill feed={official.data} />}>
+        <OfficialWarnings feed={official} limit={30} />
       </Section>
     </>
   );

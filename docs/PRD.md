@@ -6,7 +6,7 @@
 > **Document**: Product Requirements Document (PRD) & Machine Learning Master Plan  
 > **Version**: 3.5 — Unified Production Architecture & ML Plan (`volentify_ml_plan`)  
 > **Date**: 27 October 2026  
-> **Product Scope**: Volentify Web Platform (Next.js 15, FastAPI, Supabase, GIS) + Volentify Mesh (Android BLE/Wi-Fi Store-and-Forward) + Volentify ML Intelligence Suite (`volentify_ml_plan`)  
+> **Product Scope**: Volentify Web Platform (Next.js 15, FastAPI, Neon PostgreSQL, GIS) + Volentify Mesh (Android BLE/Wi-Fi Store-and-Forward) + Volentify ML Intelligence Suite (`volentify_ml_plan`)  
 > **Product Principle**: Offline-first mesh resilience in the field; sub-millisecond heuristic optimization in the cloud; continuous ML hazard forecasting.  
 > **Status**: Approved Production Specification  
 
@@ -72,9 +72,9 @@ flowchart TB
     end
 
     subgraph DATA_TIER["4. Database Tier (PostgreSQL 15+)"]
-        PGBOUNCER["PgBouncer Pooler<br/>Port 6543 (Txn Mode)"]
-        PG["Supabase PostgreSQL<br/>Port 5432 (Direct)"]
-        FALLBACK["In-Memory Mock Fallback<br/>(Zero-Downtime Resilience)"]
+        PGBOUNCER["Neon Pooled Endpoint<br/>PgBouncer (Txn Mode)"]
+        PG["Neon PostgreSQL<br/>(Vercel Storage · neon-volentify)"]
+        FALLBACK["In-Memory Store<br/>(live feeds only, nothing invented)"]
     end
 
     subgraph UI_TIER["5. Operations and Command Tier (Next.js 15)"]
@@ -101,7 +101,7 @@ flowchart TB
 ### 1.2 Dual-Runtime Execution Topology
 - **Local Development**: Uvicorn ASGI daemon on port `8000`, running concurrently with Next.js on port `3000`.
 - **Production Serverless**: Python 3.12 Serverless Functions located in `frontend/api/index.py`, rewritten through `vercel.json` (`/api/*` $\rightarrow$ `/api/index.py`).
-- **Resilient Fallback**: Zero-crash guarantee. If the database or external APIs become unreachable, data endpoints degrade to pre-cached tactical datasets (`MOCK_HAZARDS`, `MOCK_TASKS`, `MOCK_VOLUNTEERS`, `MOCK_ALERTS`, `MOCK_ORGANIZATIONS`).
+- **Resilient Fallback, real data only**: Zero-crash guarantee without invented data. Incidents come from live public feeds (GDACS, USGS, NASA EONET) and official warnings from NDMA SACHET; if the database is unreachable, reads degrade to an in-memory mirror of those feeds, and if a feed is unreachable the UI says so and shows the last real copy or nothing. No sample or mock records are shipped.
 
 ---
 
@@ -145,7 +145,7 @@ sequenceDiagram
     participant PhoneB as Relay Node (Phone B)
     participant Gateway as Gateway Node (Phone C)
     participant Cloud as Volentify Cloud API
-    participant DB as Supabase PostgreSQL
+    participant DB as Neon PostgreSQL
     actor Commander as Incident Commander
 
     Volunteer->>PhoneA: Create Offline Event (MEDICAL_EMERGENCY)
@@ -465,7 +465,7 @@ sequenceDiagram
     participant Google as Google Identity Provider
     participant Callback as /auth/callback
     participant API as FastAPI Backend (/api/auth/google)
-    participant DB as Supabase PostgreSQL
+    participant DB as Neon PostgreSQL
     participant Wizard as /onboarding Wizard
 
     User->>Client: Click "Continue with Google"
@@ -957,14 +957,10 @@ The Next.js 15 App Router codebase encompasses **28 production routes**:
 ### 12.1 Environment Variables Configuration (`frontend/.env`)
 
 ```env
-# ─── DATABASE CONNECTIONS (SUPABASE POSTGRESQL 15+) ───────────────────────
-DATABASE_URL="postgresql://postgres.{ref}:{password}@aws-0-ap-northeast-1.pooler.supabase.com:6543/postgres?pgbouncer=true"
-DIRECT_URL="postgresql://postgres.{ref}:{password}@aws-0-ap-northeast-1.pooler.supabase.com:5432/postgres"
-
-SUPABASE_URL="https://{ref}.supabase.co"
-SUPABASE_KEY="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
-SUPABASE_SERVICE_ROLE_KEY="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
-NEXT_PUBLIC_SUPABASE_ANON_KEY="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+# ─── DATABASE CONNECTIONS (NEON POSTGRESQL, VIA VERCEL STORAGE) ──────────
+# Pooled endpoint (host contains "-pooler") for the API; the unpooled one for Prisma db push / seeding.
+DATABASE_URL="postgresql://{user}:{password}@ep-{name}-pooler.{region}.aws.neon.tech/neondb?sslmode=require"
+DIRECT_URL="postgresql://{user}:{password}@ep-{name}.{region}.aws.neon.tech/neondb?sslmode=require"
 
 # ─── AI / ML ENGINE CREDENTIALS (volentify_ml_plan) ──────────────────────
 GEMINI_API_KEY="AIzaSy..."

@@ -46,6 +46,9 @@ export function DetailDrawer({ selection, disasters, onClose, compact }: {
         <div className="mb-3 flex flex-wrap items-center gap-2"><SeverityBadge level={d.severity} /><Pill>{d.category}</Pill></div>
         <p className="mb-3 text-[0.8125rem] leading-relaxed text-sand">{d.summary}</p>
         <Row label="Location">{d.location}, {d.state}</Row>
+        {d.source && <Row label="Source">{d.source_url
+          ? <a href={d.source_url} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 hover:text-signal">{d.source}<ExternalLink className="h-3 w-3" aria-hidden /></a>
+          : d.source}</Row>}
         {d.wind_speed_kmh != null && <Row label="Sustained wind"><span className="data">{d.wind_speed_kmh} km/h</span></Row>}
         {d.rainfall_mm != null && <Row label="24 h rainfall"><span className="data">{d.rainfall_mm} mm</span></Row>}
         {d.surge_meters != null && <Row label="Storm surge"><span className="data">{d.surge_meters} m</span></Row>}
@@ -121,22 +124,31 @@ export function DetailDrawer({ selection, disasters, onClose, compact }: {
     case 'hospital': {
       const h = s.item; title = h.name; lat = h.lat; lng = h.lng;
       body = (<>
-        <p className="mb-3 text-[0.8125rem] text-stone">{h.kind} · {h.trauma_level} trauma</p>
-        <Row label="ICU beds free"><span className={cn('data', h.icu_available < 10 ? 'text-high' : 'text-low')}>{h.icu_available} / {h.icu_beds}</span></Row>
-        <Row label="Address">{h.address}</Row>
+        <p className="mb-3 text-[0.8125rem] text-stone">{h.kind}{h.emergency ? ' · emergency department' : ''}</p>
+        {h.icu_available != null && h.icu_beds != null
+          ? <Row label="ICU beds free"><span className={cn('data', h.icu_available < 10 ? 'text-high' : 'text-low')}>{h.icu_available} / {h.icu_beds}</span></Row>
+          : h.beds != null && <Row label="Beds (mapped)"><span className="data">{h.beds}</span></Row>}
+        {h.address && <Row label="Address">{h.address}</Row>}
+        <Row label="Near">{h.incident_title} · <span className="data">{h.distance_km} km</span></Row>
+        <Row label="Data"><a href={h.osm_url} target="_blank" rel="noreferrer" className="hover:text-signal">OpenStreetMap</a></Row>
       </>);
-      actions = <a href={`tel:${h.phone}`} className="flex h-9 flex-1 items-center justify-center gap-1.5 rounded-lg bg-ivory/[0.08] text-[0.8125rem] text-ivory hover:bg-ivory/[0.12]"><Phone className="h-3.5 w-3.5" aria-hidden />{h.phone}</a>;
+      actions = h.phone
+        ? <a href={`tel:${h.phone.replace(/[^\d+]/g, '')}`} className="flex h-9 flex-1 items-center justify-center gap-1.5 rounded-lg bg-ivory/[0.08] text-[0.8125rem] text-ivory hover:bg-ivory/[0.12]"><Phone className="h-3.5 w-3.5" aria-hidden />{h.phone}</a>
+        : null;
       break;
     }
     case 'shelter': {
       const sh = s.item; title = sh.name; lat = sh.lat; lng = sh.lng;
-      const full = sh.occupancy / sh.capacity;
+      const full = sh.occupancy != null && sh.capacity ? sh.occupancy / sh.capacity : null;
       body = (<>
-        <div className="mb-3 h-1.5 overflow-hidden rounded-full bg-ink-700"><div className={cn('h-full rounded-full', full > 0.85 ? 'bg-high' : 'bg-info')} style={{ width: `${Math.min(100, full * 100)}%` }} /></div>
-        <Row label="Occupancy"><span className="data">{sh.occupancy} / {sh.capacity}</span></Row>
-        <Row label="Facilities">{sh.facilities.join(', ')}</Row>
-        <Row label="In charge">{sh.incharge}</Row>
-        <Row label="Address">{sh.address}</Row>
+        <p className="mb-3 text-[0.8125rem] text-stone">{sh.kind}</p>
+        {full != null && <div className="mb-3 h-1.5 overflow-hidden rounded-full bg-ink-700"><div className={cn('h-full rounded-full', full > 0.85 ? 'bg-high' : 'bg-info')} style={{ width: `${Math.min(100, full * 100)}%` }} /></div>}
+        {sh.capacity != null && <Row label={full != null ? 'Occupancy' : 'Capacity (mapped)'}><span className="data">{full != null ? `${sh.occupancy} / ${sh.capacity}` : sh.capacity}</span></Row>}
+        {sh.facilities.length > 0 && <Row label="Facilities">{sh.facilities.join(', ')}</Row>}
+        {sh.incharge && <Row label="Operator">{sh.incharge}</Row>}
+        {sh.address && <Row label="Address">{sh.address}</Row>}
+        <Row label="Near">{sh.incident_title} · <span className="data">{sh.distance_km} km</span></Row>
+        <Row label="Data"><a href={sh.osm_url} target="_blank" rel="noreferrer" className="hover:text-signal">OpenStreetMap</a></Row>
       </>);
       break;
     }

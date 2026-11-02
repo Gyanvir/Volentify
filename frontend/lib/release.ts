@@ -1,6 +1,6 @@
 /** Latest Volentify Mesh Android build, published by the GitHub "Volentify Mesh APK" workflow. */
 
-export const MESH_REPO = process.env.MESH_RELEASE_REPO || 'Gyanvir/Volentify_pilot';
+export const MESH_REPO = process.env.MESH_RELEASE_REPO || 'Gyanvir/Volentify';
 export const MESH_DOWNLOAD_PATH = '/download/android';
 
 export interface MeshRelease {

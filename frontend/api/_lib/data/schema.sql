@@ -1,6 +1,6 @@
 -- Volentify schema — equivalent to prisma/schema.prisma (Prisma naming conventions).
--- Applied automatically by the API the first time it connects to an empty database, so a fresh
--- Supabase or Neon database needs no manual migration. `npm run db:push` remains the Prisma path.
+-- Applied automatically by the API the first time it connects to an empty Neon database, so it needs no manual
+-- migration; later changes are applied by api/_lib/data/migrations.py. `npm run db:push` remains the Prisma path.
 
 DO $$ BEGIN CREATE TYPE "Role" AS ENUM ('CITIZEN', 'VOLUNTEER', 'NGO_MEMBER', 'RESEARCHER', 'INCIDENT_ADMIN'); EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 DO $$ BEGIN CREATE TYPE "Severity" AS ENUM ('CRITICAL', 'HIGH', 'MODERATE', 'LOW'); EXCEPTION WHEN duplicate_object THEN NULL; END $$;
@@ -99,6 +99,9 @@ CREATE TABLE IF NOT EXISTS "disasters" (
     "org_id" TEXT,
     "created_at" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updated_at" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "source" TEXT,
+    "source_url" TEXT,
+    "external_id" TEXT,
     CONSTRAINT "disasters_pkey" PRIMARY KEY ("id"),
     CONSTRAINT "disasters_org_id_fkey" FOREIGN KEY ("org_id") REFERENCES "organizations"("id") ON DELETE SET NULL ON UPDATE CASCADE
 );
@@ -214,3 +217,15 @@ CREATE INDEX IF NOT EXISTS "mesh_events_type_idx" ON "mesh_events"("type");
 CREATE INDEX IF NOT EXISTS "mesh_events_priority_idx" ON "mesh_events"("priority");
 CREATE INDEX IF NOT EXISTS "mesh_events_observed_at_idx" ON "mesh_events"("observed_at");
 CREATE INDEX IF NOT EXISTS "mesh_events_disaster_id_idx" ON "mesh_events"("disaster_id");
+
+-- Live hazard feeds (engines/live.py): last refresh per feed, and cached third-party lookups (OSM facilities).
+CREATE TABLE IF NOT EXISTS "feed_state" (
+    "feed" TEXT PRIMARY KEY,
+    "synced_at" TIMESTAMPTZ NOT NULL DEFAULT now(),
+    "status" JSONB
+);
+CREATE TABLE IF NOT EXISTS "feed_cache" (
+    "key" TEXT PRIMARY KEY,
+    "payload" JSONB NOT NULL,
+    "fetched_at" TIMESTAMPTZ NOT NULL DEFAULT now()
+);

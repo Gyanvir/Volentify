@@ -40,7 +40,9 @@ export default function HomeHero() {
       <div className="page relative flex min-h-[calc(100svh-4rem)] flex-col justify-between gap-16 pb-10 pt-20 sm:pt-28">
         <div className="max-w-[46rem] animate-fade-up space-y-8">
           <p className="flex items-center gap-2.5 text-sm text-sand">
-            <LiveDot /> Live across {active.length || '—'} active incident{active.length === 1 ? '' : 's'} in India
+            <LiveDot /> {disasters.data
+              ? active.length ? `Tracking ${active.length} active incident${active.length === 1 ? '' : 's'} in and around India` : 'No major hazards active in and around India right now'
+              : 'Connecting to live hazard feeds'}
           </p>
           <h1 className="display text-balance text-[3.25rem] sm:text-[5.25rem] lg:text-[6.5rem]">
             Intelligence for every disaster. Humanity for every response.

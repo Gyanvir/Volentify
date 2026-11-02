@@ -24,8 +24,8 @@ const STEPS = [
     body: 'Grant Nearby devices (Bluetooth), Location and Notifications. Leave the relay switched on — it keeps passing reports while the phone is in your pocket.',
   },
   {
-    title: 'Connect it to command',
-    body: 'Sign in on this website, open your dashboard and issue a gateway token. Paste it into the app’s Settings so the phone can upload everything it carries whenever it finds internet.',
+    title: 'It syncs on its own',
+    body: 'Whenever the phone gets mobile data or Wi-Fi, every report it carries — its own and those relayed to it — uploads to this website and appears on the map and in the incident’s timeline. Responders can add a gateway token from their dashboard in the app’s Settings to mark uploads as verified.',
   },
 ];
 

@@ -5,7 +5,8 @@ name: Volentify Mesh APK
 #
 # Optional repository secrets for a stable release signature (otherwise the debug key is used):
 #   ANDROID_KEYSTORE_BASE64, ANDROID_KEYSTORE_PASSWORD, ANDROID_KEY_ALIAS, ANDROID_KEY_PASSWORD
-# Optional repository variable: VOLENTIFY_SERVER_URL (default server the app uploads to).
+# Optional repository variable: VOLENTIFY_SERVER_URL (default server the app uploads to); falls back to VOLENTIFY_URL,
+# the same variable the Live feeds workflow uses, so one setting points both at the deployed site.
 
 on:
   push:
@@ -49,7 +50,7 @@ jobs:
           VOLENTIFY_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
           VOLENTIFY_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
           VOLENTIFY_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
-          VOLENTIFY_SERVER_URL: ${{ vars.VOLENTIFY_SERVER_URL }}
+          VOLENTIFY_SERVER_URL: ${{ vars.VOLENTIFY_SERVER_URL || vars.VOLENTIFY_URL }}
           VERSION_CODE: ${{ github.run_number }}
         run: |
           chmod +x gradlew

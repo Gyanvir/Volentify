@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import { api, ApiError } from '@/lib/api';
+import type { BulletinFeed } from '@/lib/types';
 import { cn, formatCoord, pct } from '@/lib/utils';
 import { Section } from '@/components/ui/Page';
 import { Button } from '@/components/ui/Button';
@@ -15,13 +16,7 @@ interface Cluster {
   corroborated_facts: string[]; engine: 'gemini' | 'heuristic';
 }
 
-const SAMPLE = [
-  'NDMA | 50 | Heavy flooding in Guwahati, Brahmaputra 1.8 m above danger mark',
-  'Twitter/X | 35 | Guwahati villages submerged after flood, people stranded on rooftops',
-  'CWC sensor | 20 | Flood water rising at Pandu gauge Guwahati',
-  'IMD | 90 | Cyclone approaching Puri coast with 145 km/h winds',
-  'Local news | 60 | Paradip cyclone warning, fishermen asked to return',
-].join('\n');
+const PLACEHOLDER = 'One report per line — source | minutes ago | text\ne.g. District control room | 20 | Water entering houses near the river embankment';
 
 /** Each line: "source | minutes ago | text" (source and minutes optional). */
 function parse(text: string) {
@@ -40,10 +35,29 @@ function parse(text: string) {
 }
 
 export default function DedupTool() {
-  const [text, setText] = useState(SAMPLE);
+  const [text, setText] = useState('');
+  const [loadingFeed, setLoadingFeed] = useState(false);
   const [result, setResult] = useState<{ clusters: Cluster[]; input: number } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+
+  /** Fill the box with the official warnings currently in force, so corroboration runs on real reports. */
+  const loadOfficial = async () => {
+    setLoadingFeed(true); setError(null);
+    try {
+      const feed = await api.get<BulletinFeed>('/api/bhuvan/bulletins?limit=60');
+      if (!feed.items.length) { setError('No official warnings are in force right now.'); return; }
+      const now = Date.now();
+      setText(feed.items.map((b) => {
+        const mins = Math.max(0, Math.round((now - Date.parse(b.published_at)) / 60_000));
+        return `${b.source.replace(/\|/g, '/')} | ${mins} | ${b.title.replace(/\s+/g, ' ').replace(/\|/g, '/')}`;
+      }).join('\n'));
+    } catch (e) {
+      setError(e instanceof ApiError ? e.message : 'Could not load official warnings.');
+    } finally {
+      setLoadingFeed(false);
+    }
+  };
 
   const run = async () => {
     const reports = parse(text);
@@ -67,11 +81,12 @@ export default function DedupTool() {
       <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.1fr)]">
         <div className="space-y-4">
           <Field label="Reports, one per line" hint="Format: source | minutes ago | report text" htmlFor="dedup-input">
-            <Textarea id="dedup-input" value={text} onChange={(e) => setText(e.target.value)} className="min-h-[15rem] font-mono text-[0.8125rem]" spellCheck={false} />
+            <Textarea id="dedup-input" value={text} onChange={(e) => setText(e.target.value)} placeholder={PLACEHOLDER}
+              className="min-h-[15rem] font-mono text-[0.8125rem]" spellCheck={false} />
           </Field>
-          <div className="flex gap-3">
-            <Button onClick={run} loading={busy}>Cluster reports</Button>
-            <Button variant="ghost" onClick={() => { setText(SAMPLE); setResult(null); }}>Restore sample</Button>
+          <div className="flex flex-wrap gap-3">
+            <Button onClick={run} loading={busy} disabled={!text.trim()}>Cluster reports</Button>
+            <Button variant="ghost" onClick={() => { void loadOfficial(); setResult(null); }} loading={loadingFeed}>Load warnings in force</Button>
           </div>
         </div>
 

@@ -9,7 +9,7 @@ export class ApiError extends Error {
   }
 }
 
-export interface ApiResult<T> { data: T; source: DataSource | null }
+export interface ApiResult<T> { data: T; source: DataSource | null; raw: string }
 
 /** Fetch a Volentify API route. Same-origin: the session cookie travels automatically. */
 export async function apiFetch<T>(path: string, init: RequestInit & { json?: unknown } = {}): Promise<ApiResult<T>> {
@@ -21,7 +21,7 @@ export async function apiFetch<T>(path: string, init: RequestInit & { json?: unk
     body: json !== undefined ? JSON.stringify(json) : rest.body,
   });
   const source = res.headers.get('X-Data-Source') as DataSource | null;
-  if (res.status === 204) return { data: undefined as T, source };
+  if (res.status === 204) return { data: undefined as T, source, raw: '' };
   const text = await res.text();
   let body: unknown = null;
   try {
@@ -36,7 +36,7 @@ export async function apiFetch<T>(path: string, init: RequestInit & { json?: unk
       : `Request failed (${res.status})`;
     throw new ApiError(message, res.status);
   }
-  return { data: body as T, source };
+  return { data: body as T, source, raw: text };
 }
 
 export const api = {
@@ -62,6 +62,7 @@ export function useApi<T>(path: string | null, { refreshMs }: { refreshMs?: numb
   const [source, setSource] = useState<DataSource | null>(null);
   const [nonce, setNonce] = useState(0);
   const alive = useRef(true);
+  const lastRaw = useRef<string | null>(null);
 
   useEffect(() => {
     alive.current = true;
@@ -73,7 +74,11 @@ export function useApi<T>(path: string | null, { refreshMs }: { refreshMs?: numb
     apiFetch<T>(path)
       .then((r) => {
         if (!alive.current) return;
-        setData(r.data);
+        // Polling: keep the same object when nothing changed, so maps and charts don't redraw every tick.
+        if (r.raw !== lastRaw.current) {
+          lastRaw.current = r.raw;
+          setData(r.data);
+        }
         setSource(r.source);
         setError(null);
       })
@@ -92,6 +97,6 @@ export function useApi<T>(path: string | null, { refreshMs }: { refreshMs?: numb
   }, [path, refreshMs]);
 
   const reload = useCallback(() => setNonce((n) => n + 1), []);
-  const mutate = useCallback((updater: (prev: T | undefined) => T | undefined) => setData(updater), []);
+  const mutate = useCallback((updater: (prev: T | undefined) => T | undefined) => { lastRaw.current = null; setData(updater); }, []);
   return { data, error, loading, source, reload, mutate };
 }

@@ -10,12 +10,14 @@ import pytest
 from fastapi.testclient import TestClient
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from api._lib.core import db  # noqa: E402
 from api._lib.core.config import get_settings  # noqa: E402
 from api._lib.engines import dispatch, surge, triage  # noqa: E402
 from api._lib.routers import auth, entities, mesh  # noqa: E402
 from api.index import app  # noqa: E402
+import fixtures  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
@@ -26,11 +28,13 @@ def clean_state(monkeypatch):
     monkeypatch.setenv("VOLENTIFY_ENV", "test")
     monkeypatch.setenv("NEXTAUTH_SECRET", "test-secret-that-is-at-least-32-bytes-long")
     monkeypatch.setenv("VOLENTIFY_ADMIN_EMAILS", "chief@ndrf.gov.in")
+    monkeypatch.setenv("VOLENTIFY_OFFLINE", "1")  # no outbound feed calls from tests
     get_settings.cache_clear()
     db.MEMORY.reset()
+    db.MEMORY.load(fixtures.DATASET)  # fictional test dataset — the app itself ships none
     db._state["down_until"] = 0.0
     db._pg = None
-    for limiter in (auth._login_limiter, entities._report_limiter, mesh._ingest_limiter):
+    for limiter in (auth._login_limiter, entities._report_limiter, mesh._ingest_limiter, mesh._public_ingest_limiter):
         limiter._hits.clear()
     yield
     get_settings.cache_clear()
@@ -135,9 +139,30 @@ def gateway(client):
     return {"Authorization": f"Bearer {client.post('/api/mesh/token').json()['token']}"}
 
 
-def test_ingest_requires_bearer(client):
-    r = client.post("/api/mesh/ingest", json={"gateway_node_id": str(uuid.uuid4()), "events": []})
-    assert r.status_code == 401
+def test_ingest_accepts_phones_without_token_but_rejects_bad_tokens(client):
+    """Any phone that reaches the internet uploads; a token is optional, but a bad one is refused."""
+    batch = {"gateway_node_id": str(uuid.uuid4()), "events": [mesh_event(disaster_id=None)]}
+    r = client.post("/api/mesh/ingest", json=batch)
+    assert r.status_code == 200 and r.json()["accepted_count"] == 1
+    bad = client.post("/api/mesh/ingest", json=batch, headers={"Authorization": "Bearer nope"})
+    assert bad.status_code == 401
+
+
+def test_ingested_reports_become_incident_evidence(client):
+    """A report without an incident is linked to the active incident it falls inside and joins its timeline."""
+    ev = mesh_event(disaster_id=None, type="FLOOD", priority="HIGH", lat=19.85, lng=85.8,
+                    payload={"notes": "Water entering houses near the embankment", "needs": ["boats"]})
+    r = client.post("/api/mesh/ingest", json={"gateway_node_id": str(uuid.uuid4()), "events": [ev]})
+    assert r.status_code == 200
+    stored = next(e for e in client.get("/api/mesh/events").json() if e["event_id"] == ev["event_id"])
+    assert stored["disaster_id"] == "dis_remal_puri"
+    evidence = client.get("/api/disasters/dis_remal_puri").json()["evidence"]
+    mesh = [e for e in evidence if e["source"] == "Volentify Mesh"]
+    assert mesh and "Water entering houses" in mesh[0]["claim_text"] and mesh[0]["source_type"] == "CITIZEN"
+    trapped = mesh_event(disaster_id=None, lat=19.85, lng=85.8, payload={"count": 4, "notes": "Ravi's family, 2nd floor"})
+    client.post("/api/mesh/ingest", json={"gateway_node_id": str(uuid.uuid4()), "events": [trapped]})
+    texts = [e["claim_text"] for e in client.get("/api/disasters/dis_remal_puri").json()["evidence"]]
+    assert not any("Ravi" in t for t in texts) and any("1–5 people" in t for t in texts)
 
 
 def test_ingest_is_idempotent(client):
@@ -391,3 +416,109 @@ def test_gemini_switches_from_retired_model(monkeypatch):
     assert gemini._state["model"] == "gemini-3.8-flash"
     assert gemini.probe()["ok"] and gemini.probe()["model"] == "gemini-3.8-flash"
     gemini._state.update(model=None)
+
+
+# ─── real data only (no built-in demo dataset) ──────────────────────────────
+
+def test_app_ships_no_sample_data(client):
+    db.MEMORY.reset()
+    for path in ("/api/disasters", "/api/tasks", "/api/alerts", "/api/volunteers", "/api/organizations",
+                 "/api/mesh/events", "/api/mesh/nodes"):
+        r = client.get(path)
+        assert r.status_code == 200 and r.json() == [], path
+    res = client.get("/api/resources").json()
+    assert res["hospitals"] == [] and res["shelters"] == [] and res["hotlines"]
+    feed = client.get("/api/bhuvan/bulletins").json()
+    assert feed["items"] == [] and feed["mode"] == "OFFLINE"
+
+
+GDACS_SAMPLE = {"type": "FeatureCollection", "features": [
+    {"geometry": {"type": "Point", "coordinates": [81.8, 13.5]}, "properties": {
+        "eventtype": "TC", "eventid": 1001346, "episodeid": 5, "eventname": "MURASU-26", "name": "Tropical Cyclone MURASU-26",
+        "alertlevel": "Green", "episodealertlevel": "Green", "iscurrent": "true", "country": "India",
+        "fromdate": "2026-11-01T00:00:00", "todate": "2026-11-02T00:00:00", "datemodified": "2026-11-02T01:00:00",
+        "affectedcountries": [{"iso2": "IN", "iso3": "IND", "countryname": "India"}],
+        "severitydata": {"severity": 111.1104, "severitytext": "Tropical Storm (maximum wind speed of 111 km/h)",
+                         "severityunit": "km/h"},
+        "url": {"report": "https://www.gdacs.org/report.aspx?eventid=1001346&episodeid=5&eventtype=TC"}}},
+    {"geometry": {"type": "Point", "coordinates": [141.7, 22.3]}, "properties": {
+        "eventtype": "TC", "eventid": 1001343, "eventname": "IN-FA-26", "alertlevel": "Green", "iscurrent": "true",
+        "country": "Marshall Islands", "fromdate": "2026-10-25T06:00:00", "todate": "2026-11-02T00:00:00",
+        "affectedcountries": [], "severitydata": {"severity": 240.7, "severityunit": "km/h"}, "url": {}}},
+]}
+USGS_SAMPLE = {"type": "FeatureCollection", "features": [
+    {"id": "us7000tty7", "geometry": {"type": "Point", "coordinates": [91.6593, 13.3785, 10]}, "properties": {
+        "mag": 5.1, "place": "218 km NNW of Bamboo Flat, India", "time": 1793263782448, "updated": 1793321469188,
+        "url": "https://earthquake.usgs.gov/earthquakes/eventpage/us7000tty7", "felt": 1, "alert": None,
+        "status": "reviewed", "tsunami": 0, "magType": "mb", "type": "earthquake"}}]}
+EONET_SAMPLE = {"events": [
+    {"id": "EONET_25729", "title": "Tropical Cyclone Murasu", "categories": [{"id": "severeStorms"}],
+     "sources": [{"id": "JTWC", "url": "https://www.metoc.navy.mil/jtwc/products/io0226.tcw"}],
+     "geometry": [{"magnitudeValue": 35.0, "magnitudeUnit": "kts", "date": "2026-10-31T18:00:00Z", "type": "Point",
+                   "coordinates": [84.3, 12.6]},
+                  {"magnitudeValue": 60.0, "magnitudeUnit": "kts", "date": "2026-11-01T18:00:00Z", "type": "Point",
+                   "coordinates": [82.0, 13.4]}]},
+    {"id": "EONET_9999", "title": "Wildfire in Uttarakhand", "categories": [{"id": "wildfires"}], "sources": [],
+     "geometry": [{"date": "2026-11-01T06:00:00Z", "type": "Point", "coordinates": [79.0, 30.0]}]},
+]}
+
+
+def test_live_feed_parsers_keep_regional_recent_events():
+    from api._lib.engines import live
+    now = datetime(2026, 11, 2, 3, 0, tzinfo=timezone.utc)
+    gdacs = live.parse_gdacs(GDACS_SAMPLE, now)
+    assert [g["title"] for g in gdacs] == ["Cyclone Murasu"]  # the Pacific typhoon is outside the region
+    murasu = gdacs[0]
+    assert murasu["severity"] == "HIGH" and murasu["wind_speed_kmh"] == 111.1 and murasu["source"] == "GDACS"
+    assert murasu["code"] == "GDACS-TC-1001346" and murasu["source_url"].startswith("https://www.gdacs.org/")
+    quake = live.parse_usgs(USGS_SAMPLE, now)[0]
+    assert quake["category"] == "Earthquake" and quake["severity"] == "MODERATE" and quake["state"] == "India"
+    assert quake["created_at"].year == 2026
+    eonet = live.parse_eonet(EONET_SAMPLE, now)
+    assert {e["category"] for e in eonet} == {"Cyclone", "Wildfire"}
+    merged = live.merge(gdacs + [quake] + eonet)  # EONET's copy of Murasu is dropped in favour of GDACS
+    assert sorted(i["source"] for i in merged) == ["GDACS", "NASA EONET", "USGS"]
+    assert all(i["category"] != "Cyclone" or i["source"] == "GDACS" for i in merged)
+
+
+def test_live_sync_upserts_then_closes_dropped_incidents(client, monkeypatch):
+    from api._lib.engines import live
+    db.MEMORY.reset()
+    now = datetime.now(timezone.utc)
+    incidents = live.merge(live.parse_gdacs(GDACS_SAMPLE, now) + live.parse_usgs(USGS_SAMPLE, now))
+    feeds = {"rows": incidents}
+    monkeypatch.setattr(live, "offline", lambda: False)
+    monkeypatch.setattr(live, "fetch_all", lambda now=None: (feeds["rows"], {s: "ok" for s in live.SOURCES}))
+    assert live.ensure_fresh(force=True)["refreshed"]
+    rows = client.get("/api/disasters").json()
+    assert {r["source"] for r in rows} == {"GDACS", "USGS"}
+    dossier = client.get(f"/api/disasters/{rows[0]['id']}").json()
+    assert dossier["evidence"] and dossier["evidence"][0]["source_type"] == "OFFICIAL"
+    feeds["rows"] = [i for i in incidents if i["source"] == "GDACS"]  # USGS no longer lists the quake
+    live.ensure_fresh(force=True)
+    assert {r["source"] for r in client.get("/api/disasters").json()} == {"GDACS"}
+    closed = client.get("/api/disasters", params={"include_closed": True}).json()
+    assert any(r["status"] == "CLOSED" and r["source"] == "USGS" for r in closed)
+
+
+def test_cap_message_parsing_prefers_english():
+    from api._lib.engines import intel
+    xml = b"""<?xml version="1.0"?><alert xmlns="urn:oasis:names:tc:emergency:cap:1.2">
+      <identifier>IN-1</identifier><sender>Andhra-Pradesh-SDMA</sender>
+      <info><language>TL</language><event>Cyclone</event><severity>Severe</severity><headline>x</headline></info>
+      <info><language>en-IN</language><event>Cyclone</event><severity>Severe</severity>
+        <expires>2026-11-03T07:20:00+05:30</expires><headline>Heavy rain due to Severe Cyclone Murasu</headline>
+        <instruction>Please follow SDMA guidelines.</instruction><area><areaDesc>heavy_rainfall_2026-11-02</areaDesc></area>
+      </info></alert>"""
+    cap = intel.parse_cap(xml)
+    assert cap["headline"].startswith("Heavy rain") and cap["severity"] == "HIGH" and cap["event"] == "Cyclone"
+    assert cap["expires_at"].utcoffset().total_seconds() == 19800 and cap["area"] == "heavy rainfall 2026-11-02"
+
+
+def test_health_explains_degraded_database(client, monkeypatch):
+    monkeypatch.setenv("DATABASE_URL", "postgresql://u:secretpw@127.0.0.1:1/none?sslmode=disable")
+    get_settings.cache_clear()
+    db._pg = None
+    body = client.get("/api/health").json()
+    assert body["database"] == "DEGRADED" and body["database_error"].startswith("OperationalError")
+    assert "secretpw" not in str(body) and "127.0.0.1" not in str(body)

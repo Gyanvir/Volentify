@@ -41,14 +41,14 @@ Volentify/
     │   └── …                     Feature components (auth, globe, operations, home)
     ├── lib/                      API client, session, types, constants, utilities
     ├── middleware.ts             Role-based route protection (SEC-03)
-    ├── prisma/schema.prisma      Database schema (PostgreSQL / Supabase)
+    ├── prisma/schema.prisma      Database schema (Neon PostgreSQL)
     ├── api/                      FastAPI backend (Vercel Python function)
     │   ├── index.py              App entry point and /api/health
     │   └── _lib/
-    │       ├── core/             config, database (Postgres + fallback), security
-    │       ├── engines/          dispatch, triage, surge, dedup, briefing, intel, gemini, geo
+    │       ├── core/             config, database (Neon Postgres + in-memory fallback), security
+    │       ├── engines/          live feeds, dispatch, triage, surge, dedup, briefing, intel, gemini, geo
     │       ├── routers/          auth, entities, mesh, intelligence
-    │       ├── data/             fallback dataset and seed script
+    │       ├── data/             schema, migrations, setup script, helpline reference
     │       ├── models/           trained models + model card, written by the ML workflow
     │       └── schemas.py        Request/response contracts
     └── tests/                    API acceptance tests (PRD §14)
@@ -68,19 +68,23 @@ npm run dev                          # Next.js on :3000 and FastAPI on :8000 tog
 
 Open http://localhost:3000. API docs are at http://localhost:3000/api/docs.
 
-Without `DATABASE_URL` the API serves its built-in tactical dataset and keeps new writes in memory;
-every screen shows a "Demo dataset" marker so this is never mistaken for live data. In local
+There is no sample data anywhere. Incidents come from live public hazard feeds (GDACS, USGS, NASA EONET), official
+warnings from NDMA SACHET, hospitals and shelters from OpenStreetMap, and everything else from real users. Without
+`DATABASE_URL` the live feeds still show, but nothing you create is stored — every screen marks this as "Not saved". In local
 development, NGO and command roles are verified automatically so every console can be explored.
 
 ### Connecting a database
 
-Any PostgreSQL 15+ works — Neon (from Vercel → Storage), Supabase, or local Postgres.
+The database is Neon PostgreSQL, created from Vercel → Storage (`neon-volentify`) and connected to the project.
 
-1. Set `DATABASE_URL` (the pooled connection string). `DB_URL`, `POSTGRES_URL` and `DB_POSTGRES_URL` are read
-   too, so Vercel's Neon integration works whatever prefix it was connected with.
-2. That's it: on first connection to an empty database the API creates the schema
-   (`api/_lib/data/schema.sql`, equivalent to `prisma/schema.prisma`) and loads the starting dataset.
-   `npm run db:seed` does the same from your machine; `npm run db:push` is the Prisma route.
+1. For local development copy the Neon connection strings into `frontend/.env`: in Vercel open Storage →
+   neon-volentify → `.env.local`, or run `vercel env pull frontend/.env`. Use the pooled string (host contains
+   `-pooler`) as `DATABASE_URL` and the unpooled one as `DIRECT_URL`. `DB_URL`, `POSTGRES_URL` and
+   `DB_POSTGRES_URL` are read too, so the integration works whatever prefix it was connected with.
+2. That's it: on first connection the API creates the schema (`api/_lib/data/schema.sql`, equivalent to
+   `prisma/schema.prisma`), applies migrations (`api/_lib/data/migrations.py`) and pulls the live feeds.
+   `npm run db:seed` does the same from your machine; `npm run db:push` is the Prisma route. No sample rows are
+   inserted — and a database seeded by an earlier version has its demonstration rows removed automatically.
 3. Set `NEXTAUTH_SECRET` and, for your own account, `VOLENTIFY_ADMIN_EMAILS`.
 
 ### Google sign-in
@@ -113,7 +117,8 @@ Google's signing keys, audience, issuer and a one-time nonce.
 | Storm surge | Calibrated physical estimator (inverse barometer, saturating wind set-up, coastline distance decay) driven by the forecast peak wind — there is no open surge-observation archive for India to train on. |
 | Dedup & briefing | Spatio-temporal clustering (15 km / 2 h) and corroboration analysis; Gemini merges facts and writes the 150-word briefing when `GEMINI_API_KEY` is set. |
 | Auth | Credentials (scrypt) and Google OAuth, signed HTTP-only session, compulsory 5-step onboarding, signed digital muster passes, verification for NGO/command roles. |
-| Map | MapLibre with CARTO Dark Matter, imagery base maps (Esri, NASA GIBS daily), live precipitation radar, 3D terrain with hillshade, God's Eye orbital HUD, filters, measuring, PNG export. |
+| Live data | Incidents from GDACS (cyclones, floods, droughts, wildfires, volcanoes), USGS (earthquakes M4.5+) and NASA EONET, refreshed every 15 minutes into Neon with an evidence timeline, closed automatically when a source drops them. Official CAP warnings from NDMA SACHET (expired ones removed), hospitals and shelters from OpenStreetMap near active incidents. `/api/live/status` shows when each feed last answered. |
+| Map | MapLibre with CARTO Dark Matter and satellite imagery as a base map (Esri World Imagery, NASA GIBS MODIS/VIIRS daily) under every operational layer, a one-tap Satellite switch, imagery opacity, live precipitation radar, 3D terrain with hillshade, God's Eye orbital HUD, filters, measuring, PNG export. `/map?imagery=esri-imagery` opens straight on imagery. |
 
 ## Volentify Mesh (Android)
 

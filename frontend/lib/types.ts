@@ -19,6 +19,8 @@ export interface Disaster {
   affected_pop: string | null; summary: string; wind_speed_kmh: number | null;
   rainfall_mm: number | null; surge_meters: number | null; org_id: string | null;
   created_at: string; updated_at: string;
+  /** Live feed the incident came from (GDACS, USGS, NASA EONET) and the source's own page. */
+  source: string | null; source_url: string | null; external_id: string | null;
 }
 
 export interface Evidence {
@@ -124,15 +126,22 @@ export interface DispatchResult {
   completeness: number; latency_ms: number; tasks_evaluated: number; volunteers_evaluated: number;
 }
 
-export interface Hospital {
-  id: string; name: string; kind: string; address: string; lat: number; lng: number; icu_beds: number;
-  icu_available: number; phone: string; trauma_level: string;
+/** Facilities mapped in OpenStreetMap near an active incident. Capacity fields are null unless mapped. */
+interface Facility_ {
+  id: string; name: string; address: string; lat: number; lng: number; osm_url: string;
+  incident_id: string; incident_title: string; distance_km: number;
 }
-export interface Shelter {
-  id: string; name: string; address: string; lat: number; lng: number; capacity: number; occupancy: number;
-  facilities: string[]; incharge: string;
+export interface Hospital extends Facility_ {
+  kind: string; beds: number | null; phone: string; emergency: boolean;
+  icu_beds: number | null; icu_available: number | null; trauma_level: string | null;
 }
-export interface Resources { hotlines: { label: string; number: string }[]; hospitals: Hospital[]; shelters: Shelter[] }
+export interface Shelter extends Facility_ {
+  kind: string; capacity: number | null; occupancy: number | null; facilities: string[]; incharge: string | null;
+}
+export interface Resources {
+  hotlines: { label: string; number: string }[]; hospitals: Hospital[]; shelters: Shelter[];
+  mode: 'LIVE' | 'OFFLINE' | 'NO_INCIDENTS'; fetched_at: string | null; attribution: string;
+}
 
 export interface Dossier { disaster: Disaster; evidence: Evidence[]; tasks: Task[]; alerts: Alert[] }
 
@@ -141,12 +150,17 @@ export interface Facility {
 }
 
 export interface ImageryLayer {
-  id: string; label: string; provider: string; tiles: string[]; max_zoom: number; cadence: string; dynamic?: string;
+  id: string; label: string; short?: string; provider: string; tiles: string[]; max_zoom: number; cadence: string;
+  dynamic?: string; date?: string;
 }
 
 export interface Bulletin {
   title: string; description: string; link: string | null; source: string; severity: Severity; published_at: string;
+  category?: string; event?: string | null; expires_at?: string | null; area?: string | null; instruction?: string | null;
 }
+
+/** NDMA SACHET feed: LIVE from SACHET, CACHED from Volentify's archive when SACHET is down, OFFLINE when neither. */
+export interface BulletinFeed { source: string; mode: 'LIVE' | 'CACHED' | 'OFFLINE'; items: Bulletin[] }
 
 export interface Health {
   status: string; system: string; version: string; database: 'ONLINE' | 'DEGRADED' | 'FALLBACK';
