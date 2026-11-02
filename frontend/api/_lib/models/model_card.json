@@ -1,13 +1,13 @@
 {
   "name": "volentify-cyclone-ni",
-  "version": "2026.11.01",
-  "trained_at": "2026-11-01T15:44:10+00:00",
+  "version": "2026.11.02",
+  "trained_at": "2026-11-02T00:40:21+00:00",
   "data": {
     "source": "NOAA NCEI IBTrACS v04r01, North Indian Ocean (RSMC New Delhi winds preferred)",
     "storms": 463,
-    "fixes": 8558,
+    "fixes": 8559,
     "first": "1980-10-10",
-    "last": "2026-10-28"
+    "last": "2026-10-29"
   },
   "features": [
     "wind_kt",
@@ -33,23 +33,23 @@
   "metrics": {
     "folds": 5,
     "intensity_24h": {
-      "n": 6818,
-      "mae_kt_with_history": 7.61,
-      "mae_kt_single_report": 8.03,
+      "n": 6819,
+      "mae_kt_with_history": 7.64,
+      "mae_kt_single_report": 8.02,
       "mae_kt_persistence": 9.67,
-      "skill_vs_persistence": 0.2129
+      "skill_vs_persistence": 0.21
     },
     "severe_24h": {
-      "n": 8093,
+      "n": 8094,
       "base_rate": 0.226,
       "threshold_kt": 48,
-      "auc_with_history": 0.9592,
-      "auc_single_report": 0.9554,
-      "brier_with_history": 0.0579,
+      "auc_with_history": 0.9604,
+      "auc_single_report": 0.9565,
+      "brier_with_history": 0.0572,
       "brier_climatology": 0.1748,
-      "auc_below_threshold": 0.8964,
-      "accuracy_at_0_5": 0.921,
-      "brier_skill_score": 0.6687
+      "auc_below_threshold": 0.8994,
+      "accuracy_at_0_5": 0.9208,
+      "brier_skill_score": 0.6727
     }
   },
   "xgboost": "3.4.1"

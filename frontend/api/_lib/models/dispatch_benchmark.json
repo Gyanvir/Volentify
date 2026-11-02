@@ -1,6 +1,6 @@
 {
   "name": "volentify-dispatch-benchmark",
-  "generated_at": "2026-11-01T15:46:07+00:00",
+  "generated_at": "2026-11-02T00:44:07+00:00",
   "engine": "frontend/api/_lib/engines/dispatch.py",
   "engine_constants": {
     "urgency_weight": {
@@ -38,7 +38,7 @@
       "slots": 46,
       "methods": {
         "sperling": {
-          "latency_ms_median": 1.6,
+          "latency_ms_median": 2.9,
           "timeout_rate": 0.0,
           "score_vs_optimum": 0.9198,
           "completeness": 0.8521,
@@ -49,7 +49,7 @@
           "specialists_on_generic": 0.14
         },
         "nearest": {
-          "latency_ms_median": 0.43,
+          "latency_ms_median": 0.86,
           "timeout_rate": 0.0,
           "score_vs_optimum": 0.5839,
           "completeness": 0.8172,
@@ -60,7 +60,7 @@
           "specialists_on_generic": 0.335
         },
         "optimum": {
-          "latency_ms_median": 3.02,
+          "latency_ms_median": 6.03,
           "timeout_rate": 0.0,
           "score_vs_optimum": 1.0,
           "completeness": 0.8521,
@@ -71,7 +71,7 @@
           "specialists_on_generic": 0.14
         },
         "milp_lex": {
-          "latency_ms_median": 14.51,
+          "latency_ms_median": 26.85,
           "timeout_rate": 0.0,
           "score_vs_optimum": 0.9856,
           "completeness": 0.8521,
@@ -89,7 +89,7 @@
       "slots": 169,
       "methods": {
         "sperling": {
-          "latency_ms_median": 16.88,
+          "latency_ms_median": 33.61,
           "timeout_rate": 0.0,
           "score_vs_optimum": 0.9177,
           "completeness": 0.8698,
@@ -100,7 +100,7 @@
           "specialists_on_generic": 0.0
         },
         "nearest": {
-          "latency_ms_median": 5.22,
+          "latency_ms_median": 10.83,
           "timeout_rate": 0.0,
           "score_vs_optimum": 0.558,
           "completeness": 0.8543,
@@ -111,7 +111,7 @@
           "specialists_on_generic": 0.1333
         },
         "optimum": {
-          "latency_ms_median": 38.88,
+          "latency_ms_median": 74.65,
           "timeout_rate": 0.0,
           "score_vs_optimum": 1.0,
           "completeness": 0.8722,
@@ -122,7 +122,7 @@
           "specialists_on_generic": 0.0
         },
         "milp_lex": {
-          "latency_ms_median": 249.41,
+          "latency_ms_median": 496.12,
           "timeout_rate": 0.0,
           "score_vs_optimum": 0.9904,
           "completeness": 0.8722,
@@ -140,7 +140,7 @@
       "slots": 544,
       "methods": {
         "sperling": {
-          "latency_ms_median": 178.75,
+          "latency_ms_median": 364.12,
           "timeout_rate": 0.0,
           "score_vs_optimum": 0.9144,
           "completeness": 0.9082,
@@ -151,7 +151,7 @@
           "specialists_on_generic": 0.0
         },
         "nearest": {
-          "latency_ms_median": 54.52,
+          "latency_ms_median": 114.7,
           "timeout_rate": 0.0,
           "score_vs_optimum": 0.562,
           "completeness": 0.8547,
@@ -162,7 +162,7 @@
           "specialists_on_generic": 0.0
         },
         "optimum": {
-          "latency_ms_median": 412.47,
+          "latency_ms_median": 808.17,
           "timeout_rate": 0.0,
           "score_vs_optimum": 1.0,
           "completeness": 0.909,
@@ -173,15 +173,15 @@
           "specialists_on_generic": 0.0
         },
         "milp_lex": {
-          "latency_ms_median": 5682.9,
-          "timeout_rate": 0.0,
-          "score_vs_optimum": 0.9997,
-          "completeness": 0.909,
-          "critical_fill": 1.0,
-          "high_fill": 0.948,
-          "weighted_fill": 0.9447,
-          "mean_distance_km": 9.9699,
-          "specialists_on_generic": 0.0
+          "latency_ms_median": 11326.69,
+          "timeout_rate": 1.0,
+          "score_vs_optimum": null,
+          "completeness": null,
+          "critical_fill": null,
+          "high_fill": null,
+          "weighted_fill": null,
+          "mean_distance_km": null,
+          "specialists_on_generic": null
         }
       }
     },
@@ -191,7 +191,7 @@
       "slots": 1125,
       "methods": {
         "sperling": {
-          "latency_ms_median": 730.18,
+          "latency_ms_median": 1452.46,
           "timeout_rate": 0.0,
           "score_vs_optimum": 0.8995,
           "completeness": 0.8811,
@@ -202,7 +202,7 @@
           "specialists_on_generic": 0.0
         },
         "nearest": {
-          "latency_ms_median": 219.83,
+          "latency_ms_median": 453.33,
           "timeout_rate": 0.0,
           "score_vs_optimum": 0.5545,
           "completeness": 0.8413,
@@ -213,7 +213,7 @@
           "specialists_on_generic": 0.0
         },
         "optimum": {
-          "latency_ms_median": 1715.45,
+          "latency_ms_median": 3298.04,
           "timeout_rate": 0.0,
           "score_vs_optimum": 1.0,
           "completeness": 0.8818,
@@ -224,7 +224,7 @@
           "specialists_on_generic": 0.0
         },
         "milp_lex": {
-          "latency_ms_median": 15281.9,
+          "latency_ms_median": 30224.6,
           "timeout_rate": 1.0,
           "score_vs_optimum": null,
           "completeness": null,
