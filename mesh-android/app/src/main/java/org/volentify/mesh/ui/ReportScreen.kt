@@ -82,7 +82,7 @@ fun ReportScreen(vm: MeshViewModel, onClose: () -> Unit, onRequestLocation: () -
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var locStatus by remember { mutableStateOf(LocationProvider.status(context)) }
-    var fix by remember { mutableStateOf<Fix?>(null) }
+    var fix by remember { mutableStateOf(LocationProvider.lastKnown(context)) }
     var acquiring by remember { mutableStateOf(false) }
     var attempt by remember { mutableStateOf(0) }
 
@@ -177,7 +177,8 @@ fun ReportScreen(vm: MeshViewModel, onClose: () -> Unit, onRequestLocation: () -
                         withTimeoutOrNull(SAVE_WAIT_MS) { snapshotFlow { fix != null || !acquiring }.first { it } }
                         waitingForGps = false
                     }
-                    vm.createReport(type, priority, details, incident, fix) { onClose() }
+                    val finalFix = fix ?: LocationProvider.lastKnown(context)
+                    vm.createReport(type, priority, details, incident, finalFix) { onClose() }
                 }
             },
             enabled = !saving,

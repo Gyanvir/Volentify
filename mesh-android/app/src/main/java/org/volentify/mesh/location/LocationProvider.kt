@@ -29,19 +29,32 @@ enum class LocationStatus { NoPermission, ServicesOff, Ready }
 
 /**
  * Best-effort position for field reports. Reports still save without one (AT-05), but the phone now tries every
- * location source at once instead of waiting on GPS alone: the fused provider (Android 12+), GPS and the network
- * provider all listen together and the first good fix wins.
+ * location source at once instead of waiting on GPS alone: the fused provider (Android 12+), GPS, network,
+ * and passive providers all listen together and the first good fix wins.
  */
 object LocationProvider {
-    private const val QUICK_MAX_AGE_MS = 2 * 60_000L
-    private const val QUICK_MAX_ACCURACY_M = 100f
+    private const val QUICK_MAX_AGE_MS = 15 * 60_000L
     private const val GOOD_ACCURACY_M = 50f
-    private const val STALE_MAX_AGE_MS = 30 * 60_000L
+    private const val STALE_MAX_AGE_MS = 2 * 60 * 60_000L
 
     fun status(context: Context): LocationStatus {
         if (!MeshPermissions.locationGranted(context)) return LocationStatus.NoPermission
         val lm = context.getSystemService(LocationManager::class.java) ?: return LocationStatus.ServicesOff
         return if (LocationManagerCompat.isLocationEnabled(lm)) LocationStatus.Ready else LocationStatus.ServicesOff
+    }
+
+    /**
+     * Checks all providers (GPS, network, fused, passive) for the best available cached fix.
+     * Returns null only if no location has ever been recorded or permission is absent.
+     */
+    @SuppressLint("MissingPermission")
+    fun lastKnown(context: Context): Fix? {
+        if (status(context) != LocationStatus.Ready) return null
+        val lm = context.getSystemService(LocationManager::class.java) ?: return null
+        val candidates = allProviders(lm).mapNotNull { p -> safe { lm.getLastKnownLocation(p) } }
+        val fresh = bestOf(candidates.filter { ageMs(it) <= STALE_MAX_AGE_MS })
+        val chosen = fresh ?: bestOf(candidates)
+        return chosen?.let { toFix(it) }
     }
 
     /**
@@ -52,12 +65,19 @@ object LocationProvider {
     suspend fun current(context: Context, timeoutMs: Long = 20_000, onProgress: ((Fix) -> Unit)? = null): Fix? {
         if (status(context) != LocationStatus.Ready) return null
         val lm = context.getSystemService(LocationManager::class.java) ?: return null
-        val providers = providers(lm)
-        if (providers.isEmpty()) return null
 
-        val lastKnown = providers.mapNotNull { p -> safe { lm.getLastKnownLocation(p) } }
-        bestOf(lastKnown.filter { ageMs(it) <= QUICK_MAX_AGE_MS && it.hasAccuracy() && it.accuracy <= QUICK_MAX_ACCURACY_M })
-            ?.let { return toFix(it) }
+        // 1. Immediately emit best cached location so forms and callers have a fix right away
+        val cached = lastKnown(context)
+        if (cached != null) {
+            onProgress?.invoke(cached)
+            // If already high accuracy and fresh (< 2 mins), return immediately
+            if (cached.ageMs <= 2 * 60_000L && (cached.accuracyM ?: Float.MAX_VALUE) <= GOOD_ACCURACY_M) {
+                return cached
+            }
+        }
+
+        val providers = activeProviders(lm)
+        if (providers.isEmpty()) return cached
 
         var best: Location? = null
         val good = CompletableDeferred<Location>()
@@ -87,8 +107,8 @@ object LocationProvider {
                 safe { lm.removeUpdates(listener) }
             }
         }
-        val chosen = fix ?: best ?: bestOf(lastKnown.filter { ageMs(it) <= STALE_MAX_AGE_MS })
-        return chosen?.let { toFix(it) }
+        val chosen = fix ?: best
+        return chosen?.let { toFix(it) } ?: cached
     }
 
     /** OD-05: uniform offset of up to ±500 m on each axis. */
@@ -98,12 +118,24 @@ object LocationProvider {
         return (lat + dLat) to (lng + dLng)
     }
 
-    private fun providers(lm: LocationManager): List<String> {
+    private fun allProviders(lm: LocationManager): List<String> {
+        val all = safe { lm.allProviders } ?: emptyList()
+        val standard = buildList {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) add(LocationManager.FUSED_PROVIDER)
+            add(LocationManager.GPS_PROVIDER)
+            add(LocationManager.NETWORK_PROVIDER)
+            add(LocationManager.PASSIVE_PROVIDER)
+        }
+        return (all + standard).distinct()
+    }
+
+    private fun activeProviders(lm: LocationManager): List<String> {
         val all = safe { lm.allProviders } ?: emptyList()
         val wanted = buildList {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && LocationManager.FUSED_PROVIDER in all) add(LocationManager.FUSED_PROVIDER)
             add(LocationManager.GPS_PROVIDER)
             add(LocationManager.NETWORK_PROVIDER)
+            if (LocationManager.PASSIVE_PROVIDER in all) add(LocationManager.PASSIVE_PROVIDER)
         }
         return wanted.filter { it in all && (safe { lm.isProviderEnabled(it) } == true) }
     }

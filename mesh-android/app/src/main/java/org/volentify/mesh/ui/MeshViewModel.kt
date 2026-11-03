@@ -44,9 +44,9 @@ class MeshViewModel(app: Application) : AndroidViewModel(app) {
         val body = text.trim().take(MAX_MESSAGE)
         if (body.isEmpty()) return
         viewModelScope.launch {
-            // Best-effort position (a few seconds at most) so the message lands on the website's map and is linked
-            // to the incident it was sent from once any phone carrying it reaches the internet.
+            // Best-effort position: try for a fresh fix, or fall back immediately to cached position
             val fix = LocationProvider.current(getApplication(), MESSAGE_FIX_TIMEOUT_MS)
+                ?: LocationProvider.lastKnown(getApplication())
             createReport(
                 EventType.DISASTER_STATUS, priority,
                 mapOf("message" to body, "from" to settings.displayName), disasterId = null, fix = fix,

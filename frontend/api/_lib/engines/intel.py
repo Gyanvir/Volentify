@@ -280,7 +280,8 @@ async def _enrich(client: httpx.AsyncClient, item: dict) -> dict:
             "description": cap["description"] or item["description"],
             "severity": cap["severity"] or item["severity"], "event": cap["event"] or None,
             "expires_at": cap["expires_at"], "area": cap["area"], "instruction": cap["instruction"] or None,
-            "language": cap["language"] or None}
+            "language": cap["language"] or None,
+            "source": cap.get("sender") or item["source"]}
 
 
 def _archived_bulletins(limit: int) -> list[dict]:
