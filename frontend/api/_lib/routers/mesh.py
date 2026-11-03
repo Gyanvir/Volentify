@@ -62,7 +62,26 @@ SENSITIVE_TYPES = {"PERSON_MISSING", "PERSON_TRAPPED", "MEDICAL_EMERGENCY", "PER
 PROMOTE_SKILL = {
     "PERSON_TRAPPED": "Rescue & Search", "PERSON_MISSING": "Rescue & Search", "FLOOD": "Boat Rescue",
     "MEDICAL_EMERGENCY": "Paramedic", "FIRE": "Rescue & Search", "RESOURCE_REQUEST": "Food & Shelter Logistics",
+    "VOLUNTEER_STATUS": "Food & Shelter Logistics", "DISASTER_STATUS": "Rescue & Search",
 }
+
+
+def _skill_for_event(ev_type: str, payload: dict) -> str:
+    needs = payload.get("needs") or []
+    if isinstance(needs, str):
+        needs = [needs]
+    needs_lower = " ".join(str(n).lower() for n in needs)
+    if "boat" in needs_lower:
+        return "Boat Rescue"
+    if "paramedic" in needs_lower or "ambulance" in needs_lower:
+        return "Paramedic"
+    if "medic" in needs_lower or "first aid" in needs_lower or "insulin" in needs_lower or "blood" in needs_lower:
+        return "Medical & First Aid"
+    if "food" in needs_lower or "water" in needs_lower or "ration" in needs_lower or "shelter" in needs_lower:
+        return "Food & Shelter Logistics"
+    if "drone" in needs_lower:
+        return "Drone Operation"
+    return PROMOTE_SKILL.get(ev_type, "Rescue & Search")
 PRIORITY_TO_URGENCY = {"CRITICAL": "CRITICAL", "HIGH": "HIGH", "MEDIUM": "MODERATE", "LOW": "LOW"}
 
 
@@ -177,7 +196,7 @@ def list_incidents(response: Response):
 
 @router.patch("/events/{event_id}", response_model=MeshEvent)
 def review_event(event_id: str, body: MeshReviewRequest, response: Response,
-                 claims: dict = Depends(require_roles("INCIDENT_ADMIN", "NGO_MEMBER"))):
+                 claims: dict = Depends(require_roles("INCIDENT_ADMIN", "NGO_MEMBER", "VOLUNTEER"))):
     """FR-16: mark a field report reviewed, or promote it to an official mission."""
     def review(store):
         ev = store.get_mesh_event(event_id)
@@ -187,27 +206,51 @@ def review_event(event_id: str, body: MeshReviewRequest, response: Response,
             return store.update_mesh_event(event_id, {"review_status": "REVIEWED"})
         if ev["review_status"] == "PROMOTED":
             return ev
-        disaster_id = ev["disaster_id"]
-        if not disaster_id:
-            raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Link the report to an incident first")
-        disaster = store.get_disaster(disaster_id)
+        disaster_id = getattr(body, "disaster_id", None) or ev.get("disaster_id")
+        disaster = store.get_disaster(disaster_id) if disaster_id else None
         if not disaster:
-            raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Linked incident no longer exists")
+            active = store.list_disasters(include_closed=False)
+            if active:
+                disaster = active[0]
+                disaster_id = disaster["id"]
+            else:
+                raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "No active disaster incident available to link the mission to")
         ts = now()
         label = ev["type"].replace("_", " ").title()
         payload = ev["payload"] if isinstance(ev["payload"], dict) else {}
+        notes = payload.get("notes") or payload.get("message") or ""
+        needs = payload.get("needs") or []
+        if isinstance(needs, str):
+            needs = [needs]
+        
+        skill = _skill_for_event(ev["type"], payload)
+        crew = _crew_size(payload.get("count"))
+        
+        if notes:
+            task_title = f"{label}: {str(notes)[:45]}"
+        elif needs:
+            task_title = f"{label}: Needs {', '.join(str(n) for n in needs)[:35]}"
+        else:
+            task_title = f"{label} (Mesh report)"
+            
+        desc = f"Promoted from mesh report ({ev['event_id']})."
+        if notes:
+            desc += f" Notes: {notes}."
+        if needs:
+            desc += f" Reported needs: {', '.join(str(n) for n in needs)}."
+            
         task = store.create_task({
-            "id": new_id("tsk"), "code": new_code("TSK"), "title": f"{label} — mesh report",
-            "description": f"Promoted from mesh event {ev['event_id']}. Field payload: {payload}",
-            "urgency": PRIORITY_TO_URGENCY[ev["priority"]],
-            "required_skill": PROMOTE_SKILL.get(ev["type"], "Rescue & Search"),
+            "id": new_id("tsk"), "code": new_code("TSK"), "title": task_title,
+            "description": desc,
+            "urgency": PRIORITY_TO_URGENCY.get(ev["priority"], "HIGH"),
+            "required_skill": skill,
             "lat": ev["lat"] if ev["lat"] is not None else disaster["lat"],
             "lng": ev["lng"] if ev["lng"] is not None else disaster["lng"],
-            "location_name": disaster["location"], "quantity_needed": _crew_size(payload.get("count")),
+            "location_name": disaster.get("location") or "Incident Site", "quantity_needed": crew,
             "status": "OPEN", "disaster_id": disaster_id, "created_by_id": claims["sub"], "assigned_to_id": None,
             "created_at": ts, "updated_at": ts,
         })
-        return store.update_mesh_event(event_id, {"review_status": "PROMOTED", "promoted_task_id": task["id"]})
+        return store.update_mesh_event(event_id, {"review_status": "PROMOTED", "promoted_task_id": task["id"], "disaster_id": disaster_id})
 
     row, source = db.write(review)
     tag(response, source)

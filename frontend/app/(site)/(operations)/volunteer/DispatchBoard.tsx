@@ -2,11 +2,32 @@
 
 import Link from 'next/link';
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { AlertTriangle, MapPin, RotateCw, ShieldCheck } from 'lucide-react';
+import {
+  AlertTriangle,
+  CheckCircle2,
+  MapPin,
+  MessageSquare,
+  Radio,
+  RotateCw,
+  Send,
+  ShieldCheck,
+  Sparkles,
+} from 'lucide-react';
 import { api, ApiError, apiFetch, useApi } from '@/lib/api';
+import { MESH_PRIORITY_HEX, MESH_TYPE_LABEL } from '@/lib/constants';
 import { useSession } from '@/lib/session';
-import type { Assignment, Availability, DataSource, DispatchResult, Task, TaskStatus, Volunteer } from '@/lib/types';
-import { cn, pct, SEVERITY_ORDER, timeAgo, titleCase } from '@/lib/utils';
+import type {
+  Assignment,
+  Availability,
+  DataSource,
+  DispatchResult,
+  MeshEvent,
+  MeshNode,
+  Task,
+  TaskStatus,
+  Volunteer,
+} from '@/lib/types';
+import { cn, formatCoord, pct, SEVERITY_ORDER, timeAgo, titleCase } from '@/lib/utils';
 import { Pill, SeverityBadge } from '@/components/ui/Badge';
 import { Button, ButtonLink } from '@/components/ui/Button';
 import { EmptyState, ErrorState, LoadingRows, SourceTag } from '@/components/ui/DataState';
@@ -122,6 +143,257 @@ function MyQueue({ onChange }: { onChange: () => void }) {
   );
 }
 
+type MeshTab = 'REPORTS' | 'MESSAGES' | 'ALL';
+
+function MeshTelemetryFeed({ onPromoted }: { onPromoted: () => void }) {
+  const toast = useToast();
+  const { user } = useSession();
+  const [tab, setTab] = useState<MeshTab>('REPORTS');
+  const [busy, setBusy] = useState<string | null>(null);
+  const [broadcastText, setBroadcastText] = useState('');
+  const [broadcastUrgent, setBroadcastUrgent] = useState(false);
+  const [broadcasting, setBroadcasting] = useState(false);
+
+  const eventsApi = useApi<MeshEvent[]>('/api/mesh/events?limit=100', { refreshMs: 15_000 });
+  const nodesApi = useApi<MeshNode[]>('/api/mesh/nodes', { refreshMs: 30_000 });
+
+  const all = useMemo(() => eventsApi.data ?? [], [eventsApi.data]);
+  const activeNodes = useMemo(() => (nodesApi.data ?? []).filter((n) => n.active).length, [nodesApi.data]);
+
+  // Messages are events of type DISASTER_STATUS with a "message" payload
+  const isMessage = (e: MeshEvent) => e.type === 'DISASTER_STATUS' && Boolean((e.payload as Record<string, unknown>)?.message);
+
+  const reports = useMemo(() => all.filter((e) => !isMessage(e)), [all]);
+  const messages = useMemo(() => all.filter((e) => isMessage(e)), [all]);
+
+  const displayed = useMemo(() => {
+    if (tab === 'REPORTS') return reports;
+    if (tab === 'MESSAGES') return messages;
+    return all;
+  }, [tab, reports, messages, all]);
+
+  const promoteToMission = async (e: MeshEvent) => {
+    setBusy(e.event_id);
+    try {
+      await api.patch<MeshEvent>(`/api/mesh/events/${e.event_id}`, { action: 'PROMOTE' });
+      toast('Field report promoted to an open mission on the dispatch board!');
+      eventsApi.reload();
+      onPromoted();
+    } catch (err) {
+      toast(err instanceof ApiError ? err.message : 'Could not promote report to mission', 'error');
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const sendBroadcast = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const text = broadcastText.trim();
+    if (!text) return;
+    setBroadcasting(true);
+    try {
+      const eventId = `msg_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+      const nodeId = user?.id ? `web_${user.id.slice(0, 8)}` : `web_cmd_${Math.random().toString(36).slice(2, 6)}`;
+      await api.post('/api/mesh/ingest', {
+        gateway_node_id: nodeId,
+        events: [{
+          event_id: eventId,
+          origin_node_id: nodeId,
+          type: 'DISASTER_STATUS',
+          priority: broadcastUrgent ? 'CRITICAL' : 'MEDIUM',
+          payload: {
+            message: text,
+            from: user?.name ? `${user.name} (Command Dispatch)` : 'Web Command Dispatch',
+          },
+          observed_at: new Date().toISOString(),
+          hop_count: 0,
+          ttl: 5,
+        }],
+      });
+      toast('Broadcast transmitted to mesh network');
+      setBroadcastText('');
+      setBroadcastUrgent(false);
+      eventsApi.reload();
+    } catch (err) {
+      toast(err instanceof ApiError ? err.message : 'Failed to transmit broadcast', 'error');
+    } finally {
+      setBroadcasting(false);
+    }
+  };
+
+  return (
+    <Panel className="space-y-6">
+      <div className="flex flex-wrap items-start justify-between gap-4">
+        <div>
+          <div className="flex items-center gap-2.5">
+            <Radio className="h-5 w-5 text-signal animate-pulse" aria-hidden />
+            <h2 className="text-2xl">Live field mesh & responder telemetry</h2>
+          </div>
+          <p className="mt-1 text-sm text-stone">
+            Reports and radio broadcasts relayed over Bluetooth mesh from the Volentify Android companion app in the field.
+          </p>
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <Pill tone={activeNodes > 0 ? 'good' : 'neutral'} dot>
+            {activeNodes} field phone{activeNodes === 1 ? '' : 's'} online
+          </Pill>
+          <SourceTag source={eventsApi.source} />
+        </div>
+      </div>
+
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-line pb-4">
+        <Segmented<MeshTab>
+          size="sm"
+          ariaLabel="Filter mesh telemetry"
+          value={tab}
+          onChange={setTab}
+          options={[
+            { value: 'REPORTS', label: `Field requests (${reports.length})` },
+            { value: 'MESSAGES', label: `Mesh radio (${messages.length})` },
+            { value: 'ALL', label: `All telemetry (${all.length})` },
+          ]}
+        />
+        <span className="text-xs text-stone">Auto-refreshes every 15s</span>
+      </div>
+
+      {tab === 'MESSAGES' && (
+        <form onSubmit={sendBroadcast} className="rounded-xl border border-line bg-ink-950/60 p-4 space-y-3">
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-medium text-ivory flex items-center gap-1.5">
+              <MessageSquare className="h-3.5 w-3.5 text-signal" aria-hidden /> Broadcast to field mesh
+            </span>
+            <button
+              type="button"
+              onClick={() => setBroadcastUrgent(!broadcastUrgent)}
+              className={cn(
+                'rounded-full px-2.5 py-0.5 text-xs font-medium transition-colors',
+                broadcastUrgent ? 'bg-critical/20 text-critical border border-critical/40' : 'bg-ivory/[0.05] text-stone hover:text-ivory'
+              )}
+            >
+              {broadcastUrgent ? 'Priority: Urgent' : 'Priority: Normal'}
+            </button>
+          </div>
+          <div className="flex gap-2">
+            <input
+              type="text"
+              value={broadcastText}
+              onChange={(e) => setBroadcastText(e.target.value)}
+              placeholder="Send operational update or radio broadcast to field phones..."
+              className="flex-1 rounded-lg border border-line bg-ink-900 px-3 py-2 text-sm text-ivory placeholder:text-stone focus:border-signal focus:outline-none"
+              maxLength={240}
+            />
+            <Button size="sm" type="submit" loading={broadcasting} disabled={!broadcastText.trim()}>
+              <Send className="h-3.5 w-3.5" aria-hidden /> Send
+            </Button>
+          </div>
+        </form>
+      )}
+
+      {eventsApi.loading && !eventsApi.data ? (
+        <LoadingRows rows={3} />
+      ) : eventsApi.error ? (
+        <ErrorState message={eventsApi.error.message} onRetry={eventsApi.reload} />
+      ) : displayed.length === 0 ? (
+        <EmptyState
+          title={tab === 'REPORTS' ? 'No field reports awaiting dispatch' : tab === 'MESSAGES' ? 'No radio broadcasts received yet' : 'No mesh events found'}
+          body="Field reports created in the Volentify Mesh companion app will stream here automatically when any phone within 5 hops reaches network coverage."
+        />
+      ) : (
+        <ul className="divide-y divide-line">
+          {displayed.map((e) => {
+            const isMsg = isMessage(e);
+            const payload = (e.payload ?? {}) as Record<string, unknown>;
+            const msgText = typeof payload.message === 'string' ? payload.message : undefined;
+            const fromName = (typeof payload.from === 'string' && payload.from) || `Node ${e.origin_node_id.slice(0, 8)}`;
+            const isPromoted = e.review_status === 'PROMOTED';
+            const rawNeeds = payload.needs;
+            const needs = Array.isArray(rawNeeds) ? rawNeeds : rawNeeds ? [rawNeeds] : [];
+            const notes = typeof payload.notes === 'string' ? payload.notes : typeof payload.note === 'string' ? payload.note : undefined;
+            const peopleCount = typeof payload.count === 'number' ? payload.count : undefined;
+
+            return (
+              <li key={e.event_id} className="grid gap-4 py-4 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center">
+                <div className="min-w-0 space-y-1.5">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span
+                      className="inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-xs ring-1 ring-inset ring-line-strong font-medium"
+                      style={{ color: MESH_PRIORITY_HEX[e.priority] }}
+                    >
+                      <span className="h-1.5 w-1.5 rounded-full bg-current" aria-hidden />
+                      {titleCase(e.priority)}
+                    </span>
+
+                    {isMsg ? (
+                      <Pill tone="info">Radio message</Pill>
+                    ) : (
+                      <Pill tone={isPromoted ? 'gold' : e.review_status === 'UNREVIEWED' ? 'warn' : 'good'}>
+                        {isPromoted ? 'Promoted to mission' : e.review_status === 'UNREVIEWED' ? 'Field report' : 'Reviewed'}
+                      </Pill>
+                    )}
+
+                    <span className="text-xs text-stone">
+                      observed {timeAgo(e.observed_at)} · {e.hop_count} hop{e.hop_count === 1 ? '' : 's'}
+                    </span>
+                  </div>
+
+                  {isMsg ? (
+                    <div>
+                      <p className="text-[1.0625rem] text-ivory font-serif leading-snug">"{msgText}"</p>
+                      <p className="text-xs text-stone mt-1">From: <span className="text-sand">{fromName}</span></p>
+                    </div>
+                  ) : (
+                    <div>
+                      <p className="text-[1.0625rem] text-ivory font-medium">
+                        {MESH_TYPE_LABEL[e.type] || titleCase(e.type)}
+                      </p>
+                      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-stone mt-1">
+                        {needs.length > 0 && (
+                          <span className="text-signal">
+                            Needs: <strong className="text-ivory">{needs.join(', ')}</strong>
+                          </span>
+                        )}
+                        {notes && <span>Notes: <span className="text-sand">"{notes}"</span></span>}
+                        {peopleCount != null && <span>People: <strong className="text-ivory">{peopleCount}</strong></span>}
+                        {e.lat != null && e.lng != null ? (
+                          <span className="code flex items-center gap-1">
+                            <MapPin className="h-3 w-3 text-stone" aria-hidden /> {formatCoord(e.lat, e.lng)}
+                          </span>
+                        ) : (
+                          <span className="text-stone">No GPS fix / location masked</span>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                <div className="flex items-center gap-2 shrink-0">
+                  {!isMsg && !isPromoted && (
+                    <Button
+                      size="sm"
+                      loading={busy === e.event_id}
+                      onClick={() => promoteToMission(e)}
+                      title="Promote this field report into an open mission so the dispatch engine can assign responders"
+                    >
+                      <Sparkles className="h-3.5 w-3.5 text-sand" aria-hidden />
+                      Convert to mission
+                    </Button>
+                  )}
+                  {isPromoted && (
+                    <span className="inline-flex items-center gap-1.5 text-xs text-gold">
+                      <CheckCircle2 className="h-4 w-4" aria-hidden />
+                      Live on board
+                    </span>
+                  )}
+                </div>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </Panel>
+  );
+}
+
 function OpenMissions({ isVolunteer, tasks, onAccepted }: { isVolunteer: boolean; tasks: ReturnType<typeof useApi<Task[]>>; onAccepted: () => void }) {
   const toast = useToast();
   const [busy, setBusy] = useState<string | null>(null);
@@ -140,7 +412,7 @@ function OpenMissions({ isVolunteer, tasks, onAccepted }: { isVolunteer: boolean
 
   if (tasks.loading && !tasks.data) return <LoadingRows rows={3} />;
   if (tasks.error) return <ErrorState message={tasks.error.message} onRetry={tasks.reload} />;
-  if (!rows.length) return <EmptyState title="Every mission is staffed" body="New requests from incident command will appear here." />;
+  if (!rows.length) return <EmptyState title="Every mission is staffed" body="New requests from incident command or converted field reports will appear here." />;
   return (
     <ul className="divide-y divide-line border-y border-line">
       {rows.map((t) => (
@@ -148,6 +420,7 @@ function OpenMissions({ isVolunteer, tasks, onAccepted }: { isVolunteer: boolean
           <div className="min-w-0 space-y-1.5">
             <div className="flex flex-wrap items-center gap-2"><SeverityBadge level={t.urgency} /><span className="code">{t.code}</span></div>
             <p className="text-[1.0625rem] text-ivory">{t.title}</p>
+            {t.description && <p className="text-xs text-sand line-clamp-2">{t.description}</p>}
             <p className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[0.8125rem] text-stone">
               <span>{t.required_skill}</span>
               <span>{t.quantity_needed} responder{t.quantity_needed === 1 ? '' : 's'}</span>
@@ -264,8 +537,9 @@ function DispatchCycle({ refreshKey }: { refreshKey: number }) {
                       </ul>
                     )}
                 </section>
+
                 <section aria-labelledby="scarcity">
-                  <h3 id="scarcity" className="mb-1 text-2xl">Skill scarcity</h3>
+                  <h3 id="scarcity" className="mb-4 text-2xl">Skill scarcity</h3>
                   <p className="mb-4 text-xs text-stone">S<sub>k</sub> = 1 / √N<sub>k</sub> — longer bars mean fewer available responders hold the skill.</p>
                   <ul className="space-y-3">
                     {Object.entries(result.scarcity).sort((a, b) => b[1] - a[1]).map(([skill, s]) => (
@@ -331,7 +605,21 @@ export default function DispatchBoard() {
 
       {isVolunteer && <Section className="pt-0"><MyQueue onChange={refreshAll} /></Section>}
 
-      <Section title="How missions are allocated" className={isVolunteer ? '' : 'pt-0'}>
+      {/* Real-time Field Mesh Telemetry, Reports & Radio */}
+      <Section className={isVolunteer ? '' : 'pt-0'}>
+        <MeshTelemetryFeed onPromoted={refreshAll} />
+      </Section>
+
+      <Section title="Live dispatch board" description="One allocation cycle over every open mission and available responder. Recommendations are advisory — responders accept missions themselves.">
+        <DispatchCycle refreshKey={cycle} />
+      </Section>
+
+      <Section title="Open missions" description={isVolunteer ? 'Accept a mission to add it to your queue. Command sees your acceptance immediately.' : undefined}
+        actions={!isVolunteer && status !== 'loading' ? <ButtonLink href={user ? '/onboarding' : '/register?role=VOLUNTEER'} size="sm" variant="secondary">Volunteer to take missions</ButtonLink> : undefined}>
+        <OpenMissions isVolunteer={isVolunteer} tasks={tasks} onAccepted={refreshAll} />
+      </Section>
+
+      <Section title="How missions are allocated">
         <div className="grid gap-10 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.1fr)] lg:items-start">
           <dl className="grid gap-x-8 gap-y-5 sm:grid-cols-2">
             {FACTORS.map((f) => (
@@ -343,15 +631,6 @@ export default function DispatchBoard() {
           </dl>
           <Formula />
         </div>
-      </Section>
-
-      <Section title="Live dispatch board" description="One allocation cycle over every open mission and available responder. Recommendations are advisory — responders accept missions themselves.">
-        <DispatchCycle refreshKey={cycle} />
-      </Section>
-
-      <Section title="Open missions" description={isVolunteer ? 'Accept a mission to add it to your queue. Command sees your acceptance immediately.' : undefined}
-        actions={!isVolunteer && status !== 'loading' ? <ButtonLink href={user ? '/onboarding' : '/register?role=VOLUNTEER'} size="sm" variant="secondary">Volunteer to take missions</ButtonLink> : undefined}>
-        <OpenMissions isVolunteer={isVolunteer} tasks={tasks} onAccepted={refreshAll} />
       </Section>
 
       <Section title="Responder pool">

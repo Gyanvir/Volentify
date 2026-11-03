@@ -420,6 +420,7 @@ class MeshNode(APIModel):
 
 class MeshReviewRequest(APIModel):
     action: Literal["REVIEWED", "PROMOTE"]
+    disaster_id: Optional[str] = None
 
 
 class MeshIncident(APIModel):
