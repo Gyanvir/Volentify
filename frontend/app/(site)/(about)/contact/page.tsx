@@ -39,7 +39,7 @@ export default function ContactPage() {
             </ul>
           </div>
           <p className="text-sm leading-relaxed text-stone">
-            Agencies and NGOs wanting to onboard teams can write to <a href="mailto:partners@volentify.org" className="link">partners@volentify.org</a>.
+            Agencies and NGOs wanting to onboard teams can write to <a href="mailto:gyanvirsingh09@gmail.com" className="link">gyanvirsingh09@gmail.com</a>.
           </p>
         </aside>
       </div>

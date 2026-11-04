@@ -44,10 +44,24 @@ class Settings(context: Context) {
         get() = prefs.getString(KEY_SYNC_MSG, null)
         set(v) = prefs.edit().putString(KEY_SYNC_MSG, v).apply()
 
-    /** Cached incidents from GET /api/mesh/incidents for offline report linking. */
+    /** Cached incidents (from the downlink, or GET /api/mesh/incidents on older servers) for offline report linking. */
     var incidentsJson: String?
         get() = prefs.getString(KEY_INCIDENTS, null)
         set(v) = prefs.edit().putString(KEY_INCIDENTS, v).apply()
+
+    /** Downlink cursor: the server_time of the last successful GET /api/mesh/downlink, sent back as `since`. */
+    var downlinkSince: String?
+        get() = prefs.getString(KEY_DOWNLINK_SINCE, null)
+        set(v) = prefs.edit().putString(KEY_DOWNLINK_SINCE, v).apply()
+
+    var lastDownlinkMessage: String?
+        get() = prefs.getString(KEY_DOWNLINK_MSG, null)
+        set(v) = prefs.edit().putString(KEY_DOWNLINK_MSG, v).apply()
+
+    /** Set once the "Before you use Volentify Mesh" safety screen has been acknowledged. */
+    var safetyAcknowledged: Boolean
+        get() = prefs.getBoolean(KEY_SAFETY_ACK, false)
+        set(v) = prefs.edit().putBoolean(KEY_SAFETY_ACK, v).apply()
 
     private companion object {
         const val KEY_NODE = "node_id"
@@ -59,5 +73,8 @@ class Settings(context: Context) {
         const val KEY_SYNC_MSG = "last_sync_message"
         const val KEY_INCIDENTS = "incidents_json"
         const val KEY_NAME = "display_name"
+        const val KEY_DOWNLINK_SINCE = "downlink_since"
+        const val KEY_DOWNLINK_MSG = "last_downlink_message"
+        const val KEY_SAFETY_ACK = "safety_acknowledged_v1"
     }
 }

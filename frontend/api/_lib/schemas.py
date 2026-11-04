@@ -77,6 +77,7 @@ class ReviewStatus(str, Enum):
     UNREVIEWED = "UNREVIEWED"
     REVIEWED = "REVIEWED"
     PROMOTED = "PROMOTED"
+    REJECTED = "REJECTED"
 
 
 class APIModel(BaseModel):
@@ -141,6 +142,13 @@ class Task(APIModel):
     assigned_to_id: Optional[str] = None
     created_at: datetime
     updated_at: datetime
+    accepted_at: Optional[datetime] = None
+    started_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
+    start_lat: Optional[float] = None
+    start_lng: Optional[float] = None
+    people_helped: Optional[int] = None
+    outcome_note: Optional[str] = None
 
 
 class TaskCreate(APIModel):
@@ -157,6 +165,42 @@ class TaskCreate(APIModel):
 
 class TaskStatusUpdate(APIModel):
     status: TaskStatus
+    # Starting a mission: where the responder is setting off from (typed or from the device's GPS).
+    lat: Optional[float] = Field(default=None, ge=-90, le=90)
+    lng: Optional[float] = Field(default=None, ge=-180, le=180)
+    location_name: Optional[str] = Field(default=None, max_length=120)
+    # Completing a mission: the outcome, for the responder's history and the public impact figures.
+    people_helped: Optional[int] = Field(default=None, ge=0, le=100000)
+    outcome_note: Optional[str] = Field(default=None, max_length=500)
+
+    @model_validator(mode="after")
+    def _coords_pair(self) -> "TaskStatusUpdate":
+        if (self.lat is None) != (self.lng is None):
+            raise ValueError("lat and lng must both be present or both be null")
+        return self
+
+
+class LocationUpdate(APIModel):
+    lat: float = Field(ge=-90, le=90)
+    lng: float = Field(ge=-180, le=180)
+    location_name: Optional[str] = Field(default=None, max_length=120)
+
+
+class ReviewCreate(APIModel):
+    rating: int = Field(ge=1, le=5)
+    comment: str = Field(default="", max_length=600)
+    task_id: Optional[str] = Field(default=None, max_length=64)
+
+
+class Review(APIModel):
+    id: str
+    rating: int
+    comment: str
+    author_name: str
+    author_role: str
+    task_code: Optional[str] = None
+    created_at: datetime
+    updated_at: datetime
 
 
 class Alert(APIModel):
@@ -172,6 +216,10 @@ class Alert(APIModel):
     disaster_id: Optional[str] = None
     sender_id: Optional[str] = None
     created_at: datetime
+    # BROADCAST: issued by a verified incident commander. AUTO: generated from a live-feed incident (never "official").
+    kind: Literal["BROADCAST", "AUTO"] = "BROADCAST"
+    source: Optional[str] = None
+    source_url: Optional[str] = None
 
 
 class AlertCreate(APIModel):
@@ -320,6 +368,11 @@ class RoleUpdate(APIModel):
     is_verified: Optional[bool] = None
 
 
+class PasswordChange(APIModel):
+    current_password: str = Field(min_length=1, max_length=128)
+    new_password: str = Field(min_length=10, max_length=128)
+
+
 # ─── Mesh (PRD §3, §10.2) ───────────────────────────────────────────────────
 
 class MeshEventIn(APIModel):
@@ -386,6 +439,7 @@ class MeshIngestResponse(APIModel):
     accepted_ids: list[str]
     duplicate_ids: list[str]
     persistence: Literal["durable", "volatile"]
+    blocked_count: int = 0
 
 
 class MeshEvent(APIModel):
@@ -419,8 +473,17 @@ class MeshNode(APIModel):
 
 
 class MeshReviewRequest(APIModel):
-    action: Literal["REVIEWED", "PROMOTE"]
+    action: Literal["REVIEWED", "PROMOTE", "REJECT"]
     disaster_id: Optional[str] = None
+    # REJECT only: also quarantine the phone that originated it (deliberate false or abusive reports).
+    block_node: bool = False
+    reason: Optional[str] = Field(default=None, max_length=200)
+
+
+class MeshBroadcastRequest(APIModel):
+    message: str = Field(min_length=2, max_length=240)
+    priority: Literal["MEDIUM", "HIGH", "CRITICAL"] = "MEDIUM"
+    disaster_id: Optional[str] = Field(default=None, max_length=64)
 
 
 class MeshIncident(APIModel):
@@ -624,6 +687,7 @@ class CitizenReportResponse(APIModel):
     triage: TriageResponse
     linked_disaster_id: Optional[str] = None
     stored: bool
+    removed: list[str] = []  # kinds of identity/contact numbers removed from the text before storing
 
 
 class NearbyRequest(APIModel):

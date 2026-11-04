@@ -1,150 +1,108 @@
 'use client';
 
-import Link from 'next/link';
-import { useMemo, useState } from 'react';
-import { ExternalLink, Navigation, Phone, Search } from 'lucide-react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Phone } from 'lucide-react';
 import { useApi } from '@/lib/api';
-import type { Resources } from '@/lib/types';
-import { cn, timeAgo } from '@/lib/utils';
-import { Pill } from '@/components/ui/Badge';
-import { EmptyState, ErrorState, LoadingRows } from '@/components/ui/DataState';
-import { PageHeader, Section } from '@/components/ui/Page';
+import { focusIncidents } from '@/lib/overpass';
+import type { Disaster } from '@/lib/types';
+import { SEVERITY_ORDER, cn } from '@/lib/utils';
+import IncidentOverview from './IncidentOverview';
+import NearestHelp, { type Mode } from './NearestHelp';
+import { HOTLINES, dial } from './shared';
 
-const directions = (lat: number, lng: number) => `https://www.google.com/maps/dir/?api=1&destination=${lat},${lng}`;
-const dial = (n: string) => n.replace(/[^\d+]/g, '');
+type Hotline = { label: string; number: string };
 
-function DirectionsLink({ lat, lng }: { lat: number; lng: number }) {
+/** 112 and long landline numbers take two cells, so 10 helplines tile evenly at 2, 4 and 6 columns. */
+const wide = (h: Hotline) => h.number === '112' || h.number.length > 6;
+
+function Helplines({ hotlines }: { hotlines: Hotline[] }) {
   return (
-    <a href={directions(lat, lng)} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1.5 text-[0.8125rem] text-sand hover:text-ivory">
-      <Navigation className="h-3.5 w-3.5" aria-hidden />Directions
-    </a>
+    <section id="helplines" aria-labelledby="helplines-title" className="page scroll-mt-24 pb-10">
+      <h2 id="helplines-title" className="sr-only">Emergency helplines</h2>
+      <ul className="grid grid-cols-2 gap-px overflow-hidden rounded-2xl border border-line bg-line sm:grid-cols-4 lg:grid-cols-6">
+        {hotlines.map((h) => {
+          const primary = h.number === '112';
+          return (
+            <li key={h.number} className={cn('bg-ink', wide(h) && 'col-span-2')}>
+              <a href={`tel:${dial(h.number)}`} aria-label={`Call ${h.label}, ${h.number}`}
+                className={cn('group flex h-full flex-col justify-between gap-3 p-4 transition-colors hover:bg-ink-900 focus-visible:bg-ink-900 sm:p-5',
+                  primary && 'bg-critical/[0.07] hover:bg-critical/[0.12]')}>
+                <span className={cn('text-[0.8125rem]', primary ? 'text-ivory' : 'text-stone')}>
+                  {h.label}{primary && <span className="text-stone"> · police, fire and ambulance</span>}
+                </span>
+                <span className={cn('numeral flex items-center gap-2 leading-none',
+                  primary ? 'text-5xl text-critical' : h.number.length > 6 ? 'text-2xl' : 'text-3xl')}>
+                  {h.number}
+                  <Phone className={cn('h-4 w-4 shrink-0 transition-colors group-hover:text-signal', primary ? 'text-critical' : 'text-ash')} aria-hidden />
+                </span>
+              </a>
+            </li>
+          );
+        })}
+      </ul>
+      <p className="mt-3 text-xs text-stone">Tap a number to call. If you are not sure which one to dial, call 112.</p>
+    </section>
   );
 }
 
-function OsmLink({ href }: { href: string }) {
-  return (
-    <a href={href} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-[0.8125rem] text-stone hover:text-ivory">
-      OpenStreetMap <ExternalLink className="h-3 w-3" aria-hidden />
-    </a>
-  );
-}
-
+/** Helplines, the nearest-help finder and the all-incidents overview: everything on /resources that reads live data. */
 export default function ResourceDirectory() {
-  const { data, error, loading, reload } = useApi<Resources>('/api/resources');
-  const [q, setQ] = useState('');
-  const term = q.trim().toLowerCase();
-  const match = (...parts: (string | number | null | undefined)[]) => !term || parts.filter(Boolean).join(' ').toLowerCase().includes(term);
+  const disasters = useApi<Disaster[]>('/api/disasters');
+  const incidents = useMemo(() => disasters.data ?? [], [disasters.data]);
+  const focus = useMemo(() => focusIncidents(incidents), [incidents]);
 
-  const hotlines = useMemo(() => data?.hotlines ?? [], [data]);
-  const hospitals = (data?.hospitals ?? []).filter((h) => match(h.name, h.kind, h.address, h.incident_title));
-  const shelters = (data?.shelters ?? []).filter((s) => match(s.name, s.kind, s.address, s.incharge, s.incident_title, ...s.facilities));
-  const nothing = data && term && !hospitals.length && !shelters.length;
+  const [mode, setMode] = useState<Mode>('incident');
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [hotlines, setHotlines] = useState<Hotline[]>(HOTLINES);
+  const requested = useRef<string | null>(null);
+  const finderHeading = useRef<HTMLHeadingElement>(null);
+
+  // Deep links: /resources?incident=<id> or /resources?near=1
+  useEffect(() => {
+    const p = new URLSearchParams(window.location.search);
+    requested.current = p.get('incident');
+    if (p.has('near')) setMode('near');
+  }, []);
+
+  // Default to the requested incident, else the most severe one on land.
+  useEffect(() => {
+    if (!incidents.length || (selectedId && incidents.some((d) => d.id === selectedId))) return;
+    const wanted = requested.current && incidents.find((d) => d.id === requested.current || d.code === requested.current);
+    const bySeverity = [...incidents].sort((a, b) => SEVERITY_ORDER[a.severity] - SEVERITY_ORDER[b.severity]);
+    setSelectedId((wanted || focus[0] || bySeverity[0]).id);
+  }, [incidents, focus, selectedId]);
+
+  const syncUrl = useCallback((m: Mode, id: string | null) => {
+    const url = new URL(window.location.href);
+    url.searchParams.delete('near');
+    url.searchParams.delete('incident');
+    if (m === 'near') url.searchParams.set('near', '1');
+    else if (id) url.searchParams.set('incident', id);
+    window.history.replaceState(null, '', url.pathname + url.search + url.hash);
+  }, []);
+
+  const changeMode = useCallback((m: Mode) => { setMode(m); syncUrl(m, selectedId); }, [selectedId, syncUrl]);
+  const select = useCallback((id: string) => { setSelectedId(id); syncUrl('incident', id); }, [syncUrl]);
+  const open = useCallback((id: string) => {
+    setMode('incident');
+    select(id);
+    const reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    document.getElementById('nearest')?.scrollIntoView({ behavior: reduce ? 'auto' : 'smooth', block: 'start' });
+    finderHeading.current?.focus({ preventScroll: true });
+  }, [select]);
+  const onHotlines = useCallback((h: Hotline[]) => setHotlines(h), []);
 
   return (
     <>
-      <PageHeader
-        label="Emergency resources"
-        title="Help, close at hand"
-        lede="National helplines, and the hospitals and relief shelters mapped in OpenStreetMap around incidents active right now. Call ahead: mapped facilities do not report live bed or shelter capacity."
+      <Helplines hotlines={hotlines} />
+      <NearestHelp
+        mode={mode} onMode={changeMode} incidents={incidents} incidentsLoading={disasters.loading}
+        incidentsError={disasters.error?.message ?? null} reloadIncidents={disasters.reload}
+        selectedId={selectedId} onSelect={select} headingRef={finderHeading} onHotlines={onHotlines}
       />
-
-      <Section className="pt-0">
-        <h2 className="sr-only">Helplines</h2>
-        <ul className="grid grid-cols-2 gap-px overflow-hidden rounded-2xl border border-line bg-line sm:grid-cols-5">
-          {(hotlines.length ? hotlines : Array.from({ length: 10 }, () => null)).map((h, i) => (
-            <li key={h?.number ?? i} className="bg-ink">
-              {h ? (
-                <a href={`tel:${dial(h.number)}`} className="group flex h-full flex-col justify-between gap-3 p-5 transition-colors hover:bg-ink-900">
-                  <span className="text-[0.8125rem] text-stone">{h.label}</span>
-                  <span className={cn('numeral flex items-center gap-2 text-3xl', h.number === '112' && 'text-critical')}>
-                    {h.number}<Phone className="h-4 w-4 text-ash transition-colors group-hover:text-signal" aria-hidden />
-                  </span>
-                </a>
-              ) : <div className="h-24 animate-pulse bg-ink-900" />}
-            </li>
-          ))}
-        </ul>
-      </Section>
-
-      <Section title="Hospitals and shelters near active incidents">
-        <div className="mb-8 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-          <div className="flex h-12 w-full max-w-xl items-center gap-2.5 rounded-xl border border-line bg-ink-800 px-4 focus-within:border-signal/60">
-            <Search className="h-4 w-4 text-stone" aria-hidden />
-            <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search by name, place, operator or incident"
-              aria-label="Search hospitals and shelters" className="h-full w-full bg-transparent text-[0.9375rem] text-ivory placeholder:text-ash focus:outline-none" />
-          </div>
-          {data && (
-            <p className="text-xs text-stone">
-              {data.mode === 'LIVE' && data.fetched_at ? <>From OpenStreetMap, updated {timeAgo(data.fetched_at)}</>
-                : data.mode === 'OFFLINE' ? 'OpenStreetMap is unreachable right now' : null}
-            </p>
-          )}
-        </div>
-
-        {loading && !data ? <LoadingRows rows={4} />
-          : error ? <ErrorState message={error.message} onRetry={reload} />
-          : data?.mode === 'NO_INCIDENTS' ? (
-            <EmptyState title="No active incidents on land" body="Facilities are listed around incidents in progress. When one is declared, hospitals and shelters near it appear here."
-              action={<Link href="/disasters" className="link text-sm">See incidents</Link>} />
-          ) : data?.mode === 'OFFLINE' && !data.hospitals.length && !data.shelters.length ? (
-            <EmptyState title="Facility data is temporarily unavailable" body="OpenStreetMap could not be reached. The helplines above always work." action={<button onClick={reload} className="link text-sm">Try again</button>} />
-          ) : nothing ? <EmptyState title={`Nothing matches “${q}”`} body="Try a city, district or incident name." />
-          : (
-            <div className="grid gap-12 lg:grid-cols-2">
-              <section aria-labelledby="hospitals">
-                <h3 id="hospitals" className="mb-4 text-2xl">Hospitals <span className="font-sans text-sm text-stone">{hospitals.length}</span></h3>
-                <ul className="divide-y divide-line border-y border-line">
-                  {hospitals.map((h) => (
-                    <li key={h.id} className="space-y-2 py-5">
-                      <div className="flex items-start justify-between gap-4">
-                        <div className="min-w-0">
-                          <p className="text-[0.9375rem] text-ivory">{h.name}</p>
-                          <p className="text-xs text-stone">{h.kind}{h.beds != null ? ` · ${h.beds} beds mapped` : ''}</p>
-                        </div>
-                        {h.emergency && <Pill tone="good">Emergency dept.</Pill>}
-                      </div>
-                      {h.address && <p className="text-[0.8125rem] text-sand">{h.address}</p>}
-                      <p className="text-xs text-stone">{h.distance_km} km from {h.incident_title}</p>
-                      <div className="flex flex-wrap gap-5 pt-1">
-                        {h.phone && <a href={`tel:${dial(h.phone)}`} className="inline-flex items-center gap-1.5 text-[0.8125rem] text-ivory hover:text-signal"><Phone className="h-3.5 w-3.5" aria-hidden />{h.phone}</a>}
-                        <DirectionsLink lat={h.lat} lng={h.lng} />
-                        <OsmLink href={h.osm_url} />
-                      </div>
-                    </li>
-                  ))}
-                  {!hospitals.length && <li className="py-6 text-sm text-stone">No hospitals are mapped near the active incidents.</li>}
-                </ul>
-              </section>
-
-              <section aria-labelledby="shelters">
-                <h3 id="shelters" className="mb-4 text-2xl">Shelters and assembly points <span className="font-sans text-sm text-stone">{shelters.length}</span></h3>
-                <ul className="divide-y divide-line border-y border-line">
-                  {shelters.map((s) => (
-                    <li key={s.id} className="space-y-2 py-5">
-                      <div className="flex items-start justify-between gap-4">
-                        <div className="min-w-0">
-                          <p className="text-[0.9375rem] text-ivory">{s.name}</p>
-                          <p className="text-xs text-stone">{s.kind}{s.incharge ? ` · ${s.incharge}` : ''}</p>
-                        </div>
-                        {s.capacity != null && <Pill>{s.capacity} places</Pill>}
-                      </div>
-                      {(s.address || s.facilities.length > 0) && (
-                        <p className="text-[0.8125rem] text-sand">{[s.address, s.facilities.join(', ')].filter(Boolean).join(' · ')}</p>
-                      )}
-                      <p className="text-xs text-stone">{s.distance_km} km from {s.incident_title}</p>
-                      <div className="flex flex-wrap gap-5 pt-1">
-                        <DirectionsLink lat={s.lat} lng={s.lng} />
-                        <OsmLink href={s.osm_url} />
-                      </div>
-                    </li>
-                  ))}
-                  {!shelters.length && <li className="py-6 text-sm text-stone">No shelters are mapped near the active incidents. Follow district administration announcements for relief camps.</li>}
-                </ul>
-              </section>
-            </div>
-          )}
-        {data && <p className="mt-8 text-xs text-stone">{data.attribution}</p>}
-      </Section>
+      {focus.length > 1 && (
+        <IncidentOverview focus={focus} activeId={mode === 'incident' ? selectedId : null} onOpen={open} onHotlines={onHotlines} />
+      )}
     </>
   );
 }

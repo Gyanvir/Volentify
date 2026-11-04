@@ -29,6 +29,15 @@ const STEPS = [
   },
 ];
 
+const RULES = [
+  ['Call 112 first', 'The mesh is best-effort and can take minutes to hours to reach responders.'],
+  ['Report only what you see', 'False alarms are an offence (Disaster Management Act 2005, s.54). One report per situation — repeats are refused for a minute.'],
+  ['Unverified until reviewed', 'Only messages marked “Official · Volentify command” come from verified command. Never forward rumours.'],
+  ['No identity numbers', 'Aadhaar, PAN, bank and phone numbers are removed — reports pass through other people’s phones.'],
+  ['Stay out of danger', 'Never enter flood water, damaged buildings or closed zones to file a report.'],
+  ['Mask your location if you must', 'Shifts your position by up to 500 m. Switch it off if you need rescuers to find you.'],
+] as const;
+
 const TROUBLE = [
   { q: '“App not installed” or “package conflicts”', a: 'An earlier test build is on the phone with a different signature. Uninstall Volentify Mesh, then install again.' },
   { q: 'The file opens as unknown or won’t open', a: 'Open it from the browser’s Downloads list, or from Files → Downloads. Some phones need “Install unknown apps” enabled for the Files app instead of the browser.' },
@@ -99,6 +108,21 @@ export default async function MeshAppPage() {
             </li>
           ))}
         </ol>
+      </section>
+
+      <section className="page pb-16">
+        <div className="panel grid gap-8 p-6 sm:p-8 lg:grid-cols-[18rem_1fr]">
+          <div className="space-y-3">
+            <h2 className="text-[2rem] leading-tight">Before you use it</h2>
+            <p className="text-sm text-stone">The app asks you to accept these on first launch.</p>
+            <ButtonLink href="/safety" variant="secondary" size="sm">All safety rules</ButtonLink>
+          </div>
+          <ul className="grid gap-x-8 gap-y-4 text-sm leading-relaxed text-sand sm:grid-cols-2">
+            {RULES.map(([title, body]) => (
+              <li key={title}><span className="block text-ivory">{title}</span>{body}</li>
+            ))}
+          </ul>
+        </div>
       </section>
 
       <section className="page pb-8">

@@ -12,6 +12,7 @@ import { EmptyState, ErrorState, LoadingRows } from '@/components/ui/DataState';
 import { Segmented } from '@/components/ui/Field';
 import { Stat } from '@/components/ui/Page';
 import { useToast } from '@/components/ui/Toast';
+import { CompleteMissionDialog, missionMapHref, StartMissionDialog } from '@/components/volunteer/MissionDialogs';
 import { GatewayToken } from './GatewayToken';
 
 const NEXT_STEP: Partial<Record<TaskStatus, { to: TaskStatus; label: string }>> = {
@@ -28,6 +29,8 @@ export function VolunteerDesk() {
   const open = useApi<Task[]>('/api/tasks?status=OPEN');
   const [recs, setRecs] = useState<Recommendation[] | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
+  const [starting, setStarting] = useState<Task | null>(null);
+  const [completing, setCompleting] = useState<Task | null>(null);
 
   // Rank up to 12 open missions for this responder with the dispatch engine.
   useEffect(() => {
@@ -90,12 +93,12 @@ export function VolunteerDesk() {
             options={[{ value: 'AVAILABLE', label: 'Available' }, { value: 'BUSY', label: 'Busy' }, { value: 'OFFLINE', label: 'Offline' }]} />
         </div>
         <div className="grid grid-cols-2 gap-6 rounded-2xl border border-line p-5 sm:grid-cols-4 sm:p-6">
-          <Stat label="Missions completed" value={v.missions_done + history.length} />
+          <Stat label="Missions completed" value={Math.max(v.missions_done, history.length)} />
           <Stat label="Service hours" value={Math.round(v.total_hours)} />
-          <Stat label="Response rate" value={`${v.response_rate.toFixed(0)}%`} />
+          <Stat label="People helped" value={history.reduce((n, t) => n + (t.people_helped ?? 0), 0)} />
           <Stat label="Badge" value={<span className="text-xl">{v.badge_level}</span>} />
         </div>
-        <p className="text-sm text-stone">Skills on file: <span className="text-sand">{v.skills.join(', ') || 'none'}</span> · base {v.location_name}</p>
+        <p className="text-sm text-stone">Skills on file: <span className="text-sand">{v.skills.join(', ') || 'none'}</span> · base {v.location_name} · <Link href={`/volunteers/${v.id}`} className="link">public profile & reviews</Link></p>
       </section>
 
       <section className="space-y-4">
@@ -113,7 +116,9 @@ export function VolunteerDesk() {
                     <h3 className="mt-3 font-serif text-2xl text-ivory">{t.title}</h3>
                     <p className="mt-1 flex items-center gap-1.5 text-sm text-stone"><MapPin className="h-3.5 w-3.5" aria-hidden />{t.location_name}</p>
                     <div className="mt-4 flex flex-wrap gap-2">
-                      {step && <Button size="sm" loading={busy === t.id} onClick={() => act(t.id, () => api.patch(`/api/tasks/${t.id}`, { status: step.to }), step.to === 'COMPLETED' ? 'Mission marked complete' : 'Mission started')}>{step.label}</Button>}
+                      {step && <Button size="sm" loading={busy === t.id} disabled={step.to === 'IN_PROGRESS' && v.availability === 'OFFLINE'}
+                        onClick={() => (step.to === 'IN_PROGRESS' ? setStarting(t) : setCompleting(t))}>{step.label}</Button>}
+                      {t.status === 'IN_PROGRESS' && <ButtonLink size="sm" variant="secondary" href={missionMapHref(t.id, t.start_lat != null && t.start_lng != null ? { lat: t.start_lat, lng: t.start_lng } : null)}>Route</ButtonLink>}
                       <Button size="sm" variant="ghost" disabled={busy === t.id} onClick={() => act(t.id, () => api.patch(`/api/tasks/${t.id}`, { status: 'OPEN' }), 'Mission released for another responder')}>Release</Button>
                       <ButtonLink size="sm" variant="ghost" href={`/disasters/${t.disaster_id}`}>Incident dossier</ButtonLink>
                     </div>
@@ -158,6 +163,8 @@ export function VolunteerDesk() {
       </section>
 
       <GatewayToken />
+      <StartMissionDialog task={starting} open={Boolean(starting)} onClose={() => setStarting(null)} onStarted={() => { mine.reload(); me.reload(); }} />
+      <CompleteMissionDialog task={completing} open={Boolean(completing)} onClose={() => setCompleting(null)} onDone={() => { mine.reload(); me.reload(); }} />
     </div>
   );
 }

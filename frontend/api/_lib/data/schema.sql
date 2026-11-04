@@ -8,7 +8,7 @@ DO $$ BEGIN CREATE TYPE "TaskStatus" AS ENUM ('OPEN', 'ASSIGNED', 'IN_PROGRESS',
 DO $$ BEGIN CREATE TYPE "SourceType" AS ENUM ('OFFICIAL', 'NEWS', 'SOCIAL', 'SENSOR', 'CITIZEN'); EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 DO $$ BEGIN CREATE TYPE "MeshEventType" AS ENUM ('PERSON_RESCUED', 'PERSON_MISSING', 'PERSON_TRAPPED', 'MEDICAL_EMERGENCY', 'FIRE', 'FLOOD', 'RESOURCE_REQUEST', 'VOLUNTEER_STATUS', 'DISASTER_STATUS'); EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 DO $$ BEGIN CREATE TYPE "MeshPriority" AS ENUM ('LOW', 'MEDIUM', 'HIGH', 'CRITICAL'); EXCEPTION WHEN duplicate_object THEN NULL; END $$;
-DO $$ BEGIN CREATE TYPE "ReviewStatus" AS ENUM ('UNREVIEWED', 'REVIEWED', 'PROMOTED'); EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+DO $$ BEGIN CREATE TYPE "ReviewStatus" AS ENUM ('UNREVIEWED', 'REVIEWED', 'PROMOTED', 'REJECTED'); EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
 CREATE TABLE IF NOT EXISTS "organizations" (
     "id" TEXT NOT NULL,
@@ -125,6 +125,13 @@ CREATE TABLE IF NOT EXISTS "tasks" (
     "disaster_id" TEXT NOT NULL,
     "created_by_id" TEXT NOT NULL,
     "assigned_to_id" TEXT,
+    "accepted_at" TIMESTAMP(3),
+    "started_at" TIMESTAMP(3),
+    "completed_at" TIMESTAMP(3),
+    "start_lat" DOUBLE PRECISION,
+    "start_lng" DOUBLE PRECISION,
+    "people_helped" INTEGER,
+    "outcome_note" TEXT,
     "created_at" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updated_at" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     CONSTRAINT "tasks_pkey" PRIMARY KEY ("id"),
@@ -229,3 +236,55 @@ CREATE TABLE IF NOT EXISTS "feed_cache" (
     "payload" JSONB NOT NULL,
     "fetched_at" TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- Reviews of volunteers by other members (one per author and volunteer; editable).
+CREATE TABLE IF NOT EXISTS "volunteer_reviews" (
+    "id" TEXT NOT NULL,
+    "volunteer_user_id" TEXT NOT NULL,
+    "author_id" TEXT NOT NULL,
+    "task_id" TEXT,
+    "rating" INTEGER NOT NULL,
+    "comment" TEXT NOT NULL DEFAULT '',
+    "created_at" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updated_at" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT "volunteer_reviews_pkey" PRIMARY KEY ("id"),
+    CONSTRAINT "volunteer_reviews_rating_check" CHECK ("rating" BETWEEN 1 AND 5),
+    CONSTRAINT "volunteer_reviews_volunteer_user_id_fkey" FOREIGN KEY ("volunteer_user_id") REFERENCES "users"("id") ON DELETE CASCADE ON UPDATE CASCADE,
+    CONSTRAINT "volunteer_reviews_author_id_fkey" FOREIGN KEY ("author_id") REFERENCES "users"("id") ON DELETE CASCADE ON UPDATE CASCADE,
+    CONSTRAINT "volunteer_reviews_task_id_fkey" FOREIGN KEY ("task_id") REFERENCES "tasks"("id") ON DELETE SET NULL ON UPDATE CASCADE
+);
+CREATE UNIQUE INDEX IF NOT EXISTS "volunteer_reviews_volunteer_author_key" ON "volunteer_reviews"("volunteer_user_id", "author_id");
+
+-- Tamper-evident audit trail of privileged actions (CERT-In directions: keep at least 180 days). Append-only.
+CREATE TABLE IF NOT EXISTS "audit_log" (
+    "id" BIGSERIAL PRIMARY KEY,
+    "at" TIMESTAMPTZ NOT NULL DEFAULT now(),
+    "actor_id" TEXT,
+    "actor_email" TEXT,
+    "actor_role" TEXT,
+    "action" TEXT NOT NULL,
+    "target_type" TEXT,
+    "target_id" TEXT,
+    "detail" JSONB NOT NULL DEFAULT '{}',
+    "ip" TEXT,
+    "prev_hash" TEXT,
+    "hash" TEXT
+);
+CREATE INDEX IF NOT EXISTS "audit_log_at_idx" ON "audit_log"("at");
+CREATE INDEX IF NOT EXISTS "audit_log_action_idx" ON "audit_log"("action");
+
+-- Mesh nodes quarantined by command after deliberate false or abusive reports; their uploads are dropped.
+CREATE TABLE IF NOT EXISTS "blocked_nodes" (
+    "node_uuid" TEXT PRIMARY KEY,
+    "reason" TEXT NOT NULL,
+    "blocked_by" TEXT,
+    "created_at" TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- Platform regulator accounts (regulation & monitoring). Passwords are scrypt hashes; see api/_lib/data/regulators.py.
+INSERT INTO "users" ("id", "name", "email", "phone", "password_hash", "role", "provider", "is_verified", "onboarded", "profile_data", "updated_at") VALUES
+    ('usr_regulator_gurpreet', 'Gurpreet', 'gurpreet@volentify.com', '', 'scrypt$ftGbrAlO/XD6boT+Jvta2w==$xc0tYoYOJ7PCB1qn6fVoWbOrU+qexLid2N+fLFncmCM=', 'INCIDENT_ADMIN', 'credentials', true, true, '{"regulator": true, "title": "Regulation & monitoring", "must_change_password": true}', CURRENT_TIMESTAMP),
+    ('usr_regulator_gyanvir', 'Gyanvir', 'gyanvir@volentify.com', '', 'scrypt$Lyv+EY/8I3oG0pxqwNf6nw==$2X8rGpoZT8IsnAU6G2XTlKzQ1LtO8U2T3s6oh5nQ4UM=', 'INCIDENT_ADMIN', 'credentials', true, true, '{"regulator": true, "title": "Regulation & monitoring", "must_change_password": true}', CURRENT_TIMESTAMP),
+    ('usr_regulator_himanshu', 'Himanshu', 'himanshu@volentify.com', '', 'scrypt$YFHnd+pNa+1hnlBNmBG+NA==$Qm9d5kbdPbNX6rb3e28kW0JjWT0skiyw9ggnirpKv1c=', 'INCIDENT_ADMIN', 'credentials', true, true, '{"regulator": true, "title": "Regulation & monitoring", "must_change_password": true}', CURRENT_TIMESTAMP),
+    ('usr_regulator_rajveer', 'Rajveer', 'rajveer@volentify.com', '', 'scrypt$Lu5UdFMtho32PFdSTUVYmg==$Uu7/xGk2k5XCDTuoLbWD/Al93h46eE8MEGZht8Umu24=', 'INCIDENT_ADMIN', 'credentials', true, true, '{"regulator": true, "title": "Regulation & monitoring", "must_change_password": true}', CURRENT_TIMESTAMP)
+ON CONFLICT ("email") DO NOTHING;

@@ -36,7 +36,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.delay
 import org.json.JSONObject
+import org.volentify.mesh.data.Envelope
 import org.volentify.mesh.data.MeshEvent
+import org.volentify.mesh.data.Rules
 import org.volentify.mesh.mesh.MeshPermissions
 import org.volentify.mesh.mesh.MeshState
 import org.volentify.mesh.ui.theme.Palette
@@ -88,7 +90,8 @@ fun HomeScreen(
                             when {
                                 !permitted -> "Allow nearby devices so this phone can relay"
                                 mesh.error != null -> mesh.error!!
-                                mesh.running -> "${mesh.peersNearby} phone${if (mesh.peersNearby == 1) "" else "s"} nearby · ${mesh.sent} sent · ${mesh.received} received"
+                                mesh.running -> "${mesh.peersNearby} phone${if (mesh.peersNearby == 1) "" else "s"} nearby · ${mesh.sent} sent · ${mesh.received} received" +
+                                    (if (mesh.batterySaver) "\nBattery low — relaying less often to save power" else "")
                                 else -> "Turn on to pass reports between phones without signal"
                             },
                             style = MaterialTheme.typography.bodySmall,
@@ -105,6 +108,7 @@ fun HomeScreen(
                     Stat("Last sync", if (vm.settings.lastSyncAt == 0L) "Never" else DateFormat.getTimeInstance(DateFormat.SHORT).format(Date(vm.settings.lastSyncAt)))
                 }
                 vm.settings.lastSyncMessage?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+                vm.settings.lastDownlinkMessage?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
             }
         }
         item {
@@ -125,7 +129,14 @@ fun HomeScreen(
             }
             message?.let { Text(it, color = Palette.Gold, fontSize = 13.sp, modifier = Modifier.padding(top = 8.dp)) }
         }
-        item { Text("Reports on this phone", style = MaterialTheme.typography.headlineSmall, modifier = Modifier.padding(top = 8.dp)) }
+        item {
+            Text("Reports on this phone", style = MaterialTheme.typography.headlineSmall, modifier = Modifier.padding(top = 8.dp))
+            Text(
+                "Field reports are unverified until an incident controller reviews them. Only items marked " +
+                    "“${Rules.Provenance.OFFICIAL.label}” come from verified command.",
+                style = MaterialTheme.typography.bodySmall,
+            )
+        }
         if (events.isEmpty()) {
             item {
                 Text(
@@ -147,18 +158,31 @@ private fun Stat(label: String, value: String) {
     }
 }
 
+/** Trust markers are shown as the label above each item, never as raw payload text. */
+private val HIDDEN_KEYS = setOf(Envelope.KEY_OFFICIAL, Envelope.KEY_ALERT_CODE, Envelope.KEY_RELAY_CLAIM)
+
 @Composable
 private fun EventRow(e: MeshEvent) {
-    val details = remember(e.payloadJson) {
-        try {
-            val o = JSONObject(e.payloadJson)
-            o.keys().asSequence().joinToString(" · ") { k -> "${k.replace('_', ' ')}: ${o.get(k)}" }
-        } catch (_: Exception) { "" }
+    val payload = remember(e.payloadJson) { runCatching { JSONObject(e.payloadJson) }.getOrNull() }
+    val details = remember(payload) {
+        val o = payload ?: return@remember ""
+        if (o.optBoolean("redacted")) {
+            // Sensitive reports from the server arrive without details (OD-02).
+            "Details withheld for privacy" + ((o.opt("count_band") as? String)?.let { " · $it people" } ?: "")
+        } else {
+            o.keys().asSequence().filter { it !in HIDDEN_KEYS }.joinToString(" · ") { k -> "${k.replace('_', ' ')}: ${o.get(k)}" }
+        }
     }
+    val provenance = provenanceOf(e, payload)
+    val alertCode = (payload?.opt(Envelope.KEY_ALERT_CODE) as? String).orEmpty()
     Column(
         Modifier.fillMaxWidth().border(1.dp, Palette.Line, RoundedCornerShape(14.dp)).padding(14.dp),
         verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
+        Pill(
+            if (provenance == Rules.Provenance.OFFICIAL && alertCode.isNotEmpty()) "${provenance.label} · $alertCode" else provenance.label,
+            provenanceColor(provenance),
+        )
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Pill(e.priority.name.lowercase().replaceFirstChar { it.uppercase() }, priorityColor(e.priority))
             Pill(e.status.label, statusColor(e.status))
@@ -168,7 +192,13 @@ private fun EventRow(e: MeshEvent) {
         Text(
             buildString {
                 append(DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT).format(Date(e.observedAt)))
-                append(if (e.createdHere) " · created here" else " · relayed in, ${e.hopCount} hop${if (e.hopCount == 1) "" else "s"}")
+                append(
+                    when {
+                        e.createdHere -> " · created here"
+                        e.fromServer -> " · from the Volentify server"
+                        else -> " · relayed in, ${e.hopCount} hop${if (e.hopCount == 1) "" else "s"}"
+                    },
+                )
                 if (e.lat == null) append(" · no GPS")
             },
             style = MaterialTheme.typography.bodySmall,

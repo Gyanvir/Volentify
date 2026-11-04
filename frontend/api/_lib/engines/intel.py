@@ -84,7 +84,7 @@ async def nearby_infrastructure(lat: float, lng: float, radius_km: float) -> dic
 # ─── Hospitals & relief shelters near active incidents (OpenStreetMap) ─────
 
 RESOURCE_TTL_S = 6 * 3600
-_resource_cache: dict[str, Any] = {"key": None, "at": 0.0, "value": None}
+_resource_cache: dict[str, tuple[float, Any]] = {}
 
 
 def _address(tags: dict) -> str:
@@ -102,7 +102,7 @@ def _int(value: Any) -> Optional[int]:
         return None
 
 
-def _facilities_query(centers: list[tuple[float, float, float]]) -> str:
+def _facilities_query(centers: list[tuple[float, float, float]], timeout_s: int = 10) -> str:
     clauses = []
     for lat, lng, r in centers:
         around = f"(around:{int(r * 1000)},{lat:.5f},{lng:.5f})"
@@ -110,10 +110,15 @@ def _facilities_query(centers: list[tuple[float, float, float]]) -> str:
                     f'nwr["social_facility"="shelter"]{around};',
                     f'nwr["emergency"="assembly_point"]{around};',
                     f'nwr["amenity"="shelter"]["shelter_type"!~"public_transport|picnic_shelter|weather_shelter"]["name"]{around};']
-    return "[out:json][timeout:18];(" + "".join(clauses) + ");out center tags 400;"
+    return f"[out:json][timeout:{timeout_s}];(" + "".join(clauses) + ");out center tags 300;"
 
 
 def parse_facilities(elements: list[dict], incidents: list[dict]) -> dict[str, list[dict]]:
+    """Hospitals and shelters, each matched to its nearest incident (or reference point) with the distance to it.
+
+    `inside_zone` marks facilities inside the incident's mapped hazard radius: they are closest, but may themselves
+    be affected, so the page tells people to confirm they are operating before travelling.
+    """
     hospitals: list[dict] = []
     shelters: list[dict] = []
     seen: set[str] = set()
@@ -128,10 +133,11 @@ def parse_facilities(elements: list[dict], incidents: list[dict]) -> dict[str, l
             continue
         seen.add(osm_id)
         near = min(incidents, key=lambda d: haversine_km(lat, lng, d["lat"], d["lng"]))
+        distance = round(haversine_km(lat, lng, near["lat"], near["lng"]), 1)
         common = {"id": f"osm_{osm_id}", "name": name, "address": _address(tags), "lat": lat, "lng": lng,
                   "osm_url": f"https://www.openstreetmap.org/{el.get('type', 'node')}/{el.get('id')}",
-                  "incident_id": near["id"], "incident_title": near["title"],
-                  "distance_km": round(haversine_km(lat, lng, near["lat"], near["lng"]), 1)}
+                  "incident_id": near["id"], "incident_title": near["title"], "distance_km": distance,
+                  "inside_zone": bool(near.get("radius_km")) and distance <= float(near.get("radius_km") or 0)}
         if tags.get("amenity") == "hospital":
             kind = "Emergency hospital" if tags.get("emergency") == "yes" else (
                 "Government hospital" if tags.get("operator:type") in {"government", "public"} else "Hospital")
@@ -151,45 +157,95 @@ def parse_facilities(elements: list[dict], incidents: list[dict]) -> dict[str, l
     return {"hospitals": hospitals[:120], "shelters": shelters[:120]}
 
 
-def relief_facilities(incidents: list[dict], cache_get=None, cache_put=None) -> dict[str, Any]:
-    """Hospitals and shelters mapped in OpenStreetMap around the most severe active incidents.
+def overpass_first(query: str, deadline_s: float = 11.0) -> Optional[list[dict]]:
+    """Ask every Overpass mirror at once and keep the first good answer, within a hard deadline.
 
-    Cached for six hours (in process and, when given, in the database) because Overpass is slow and rate-limited.
+    The previous sequential loop (three mirrors × 12 s) could outlast Vercel's 30 s function limit, which is why
+    /api/resources timed out and the Resources page never loaded.
     """
-    order = {"CRITICAL": 0, "HIGH": 1, "MODERATE": 2, "LOW": 3}
-    land = [d for d in incidents if d.get("status", "ACTIVE") == "ACTIVE" and d.get("category") in FACILITY_HAZARDS
-            and not str(d.get("location", "")).endswith("Sea") and d.get("state") not in {"Bay of Bengal", "Arabian Sea", "Indian Ocean"}]
-    focus = sorted(land, key=lambda d: (order.get(d["severity"], 4), d["title"]))[:6]
-    if not focus:
-        return {"hospitals": [], "shelters": [], "mode": "NO_INCIDENTS", "fetched_at": None}
-    key = "facilities:" + ",".join(sorted(d["id"] for d in focus))
-    if _resource_cache["key"] == key and time.monotonic() - _resource_cache["at"] < RESOURCE_TTL_S:
-        return _resource_cache["value"]
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    from concurrent.futures import TimeoutError as FutureTimeout
+
+    def one(url: str) -> list[dict]:
+        resp = httpx.post(url, data={"data": query}, headers={"User-Agent": USER_AGENT},
+                          timeout=httpx.Timeout(deadline_s, connect=3.0))
+        resp.raise_for_status()
+        return resp.json().get("elements", [])
+
+    pool = ThreadPoolExecutor(max_workers=len(OVERPASS_MIRRORS))
+    futures = [pool.submit(one, url) for url in OVERPASS_MIRRORS]
+    try:
+        for future in as_completed(futures, timeout=deadline_s):
+            try:
+                return future.result()
+            except (httpx.HTTPError, ValueError):
+                continue
+    except (FutureTimeout, TimeoutError):
+        pass
+    finally:
+        pool.shutdown(wait=False, cancel_futures=True)
+    return None
+
+
+def _cached_fetch(key: str, centers: list[tuple[float, float, float]], refs: list[dict], cache_get, cache_put,
+                  deadline_s: float) -> dict[str, Any]:
+    if _resource_cache.get(key) and time.monotonic() - _resource_cache[key][0] < RESOURCE_TTL_S:
+        return _resource_cache[key][1]
     cached = cache_get(key, RESOURCE_TTL_S) if cache_get else None
     if cached:
-        _resource_cache.update(key=key, at=time.monotonic(), value=cached)
+        _resource_cache[key] = (time.monotonic(), cached)
         return cached
     if offline():
-        return {"hospitals": [], "shelters": [], "mode": "OFFLINE", "fetched_at": None}
-    centers = [(d["lat"], d["lng"], max(5.0, min(20.0, float(d.get("radius_km") or 20)))) for d in focus]
-    value = None
-    for url in OVERPASS_MIRRORS:  # the main instance often refuses or times out cloud traffic; try mirrors
-        try:
-            resp = httpx.post(url, data={"data": _facilities_query(centers)}, timeout=httpx.Timeout(9.0, connect=3.0),
-                              headers={"User-Agent": USER_AGENT})
-            resp.raise_for_status()
-            value = {**parse_facilities(resp.json().get("elements", []), focus), "mode": "LIVE",
-                     "fetched_at": datetime.now(timezone.utc).isoformat()}
-            break
-        except (httpx.HTTPError, ValueError):
-            continue
-    if value is None:
+        return {"hospitals": [], "shelters": [], "mode": "OFFLINE", "fetched_at": None, "query": None}
+    query = _facilities_query(centers, timeout_s=int(deadline_s))
+    elements = overpass_first(query, deadline_s)
+    if elements is None:
         stale = cache_get(key, None) if cache_get else None
-        return stale or {"hospitals": [], "shelters": [], "mode": "OFFLINE", "fetched_at": None}
-    _resource_cache.update(key=key, at=time.monotonic(), value=value)
+        # The browser can still ask Overpass itself (lib/overpass.ts), so hand it the query it should run.
+        return stale or {"hospitals": [], "shelters": [], "mode": "OFFLINE", "fetched_at": None, "query": query}
+    value = {**parse_facilities(elements, refs), "mode": "LIVE", "fetched_at": datetime.now(timezone.utc).isoformat(),
+             "query": None}
+    _resource_cache[key] = (time.monotonic(), value)
     if cache_put:
         cache_put(key, value)
     return value
+
+
+def _focus(incidents: list[dict]) -> list[dict]:
+    order = {"CRITICAL": 0, "HIGH": 1, "MODERATE": 2, "LOW": 3}
+    land = [d for d in incidents if d.get("status", "ACTIVE") == "ACTIVE" and d.get("category") in FACILITY_HAZARDS
+            and not str(d.get("location", "")).endswith("Sea") and d.get("state") not in {"Bay of Bengal", "Arabian Sea", "Indian Ocean"}]
+    return sorted(land, key=lambda d: (order.get(d["severity"], 4), d["title"]))
+
+
+def relief_facilities(incidents: list[dict], cache_get=None, cache_put=None, deadline_s: float = 11.0) -> dict[str, Any]:
+    """Hospitals and shelters mapped in OpenStreetMap around the most severe active incidents (up to four).
+
+    Cached for six hours (in process and, when given, in the database) because Overpass is slow and rate-limited.
+    """
+    focus = _focus(incidents)[:4]
+    if not focus:
+        return {"hospitals": [], "shelters": [], "mode": "NO_INCIDENTS", "fetched_at": None, "query": None}
+    key = "facilities:" + ",".join(sorted(d["id"] for d in focus))
+    centers = [(d["lat"], d["lng"], max(5.0, min(15.0, float(d.get("radius_km") or 15)))) for d in focus]
+    return _cached_fetch(key, centers, focus, cache_get, cache_put, deadline_s)
+
+
+def facilities_for_incident(incident: dict, cache_get=None, cache_put=None, deadline_s: float = 11.0) -> dict[str, Any]:
+    """Facilities around one incident, nearest first (the incident-specific matching on /resources)."""
+    radius = max(8.0, min(25.0, float(incident.get("radius_km") or 20)))
+    key = f"facilities:one:{incident['id']}:{int(radius)}"
+    return _cached_fetch(key, [(incident["lat"], incident["lng"], radius)], [incident], cache_get, cache_put,
+                         deadline_s)
+
+
+def facilities_near(lat: float, lng: float, radius_km: float, cache_get=None, cache_put=None,
+                    deadline_s: float = 11.0) -> dict[str, Any]:
+    """Facilities around a point (the person's own location), nearest first. Cached per ~1 km grid cell."""
+    lat, lng = round(lat, 2), round(lng, 2)
+    ref = {"id": "here", "title": "your location", "lat": lat, "lng": lng, "radius_km": 0}
+    key = f"facilities:near:{lat:.2f}:{lng:.2f}:{int(radius_km)}"
+    return _cached_fetch(key, [(lat, lng, radius_km)], [ref], cache_get, cache_put, deadline_s)
 
 
 # ─── NDMA SACHET Common Alerting Protocol feed ──────────────────────────────

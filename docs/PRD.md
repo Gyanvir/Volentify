@@ -1077,4 +1077,4 @@ gantt
 - **Machine Learning Core**: Approved — Volentify ML Group (`volentify_ml_plan`)
 - **Field & Mesh Engineering**: Approved — Volentify Mobile & Systems Team
 - **License**: MIT Open Source License
-- **Canonical Repository**: [https://github.com/thehimanshubansal/Volentify](https://github.com/thehimanshubansal/Volentify)
+- **Canonical Repository**: [https://github.com/Gyanvir/Volentify](https://github.com/Gyanvir/Volentify)

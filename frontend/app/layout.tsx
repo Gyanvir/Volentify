@@ -10,6 +10,11 @@ export const metadata: Metadata = {
   description:
     'Live incident mapping, offline mesh field reports, hazard forecasting and volunteer dispatch for India’s disaster responders.',
   applicationName: 'Volentify',
+  metadataBase: new URL(process.env.NEXT_PUBLIC_SITE_URL || 'https://volentify.vercel.app'),
+  openGraph: {
+    siteName: 'Volentify', type: 'website',
+    images: [{ url: '/brand/volentify-logo-on-dark-1200.png', width: 1200, height: 630, alt: 'Volentify' }],
+  },
 };
 
 export const viewport: Viewport = { themeColor: '#07080a', width: 'device-width', initialScale: 1 };

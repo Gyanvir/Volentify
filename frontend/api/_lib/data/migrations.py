@@ -7,6 +7,11 @@
                        mesh nodes and reports, and five sample organisation records). Rows created by real users are
                        kept; missions and evidence attached to the removed sample incidents go with them, and
                        alerts or mesh reports that pointed at them are unlinked.
+  2026-11-ops-v4       mission lifecycle (accepted/started/completed times, start position, people helped, outcome),
+                       volunteer reviews, the audit log, quarantined mesh nodes and the REJECTED review state.
+  2026-11-regulators   the four platform regulator accounts (data/regulators.py). An existing account with one of
+                       those addresses is taken over: role, verification and password are reset to the provisioned
+                       values, so an account registered with the address by someone else cannot keep access.
 
 Each migration runs once, inside a transaction holding an advisory lock, and is recorded in volentify_migrations.
 """
@@ -71,9 +76,85 @@ def _live_feeds(conn) -> None:
     conn.execute(LIVE_FEEDS_SQL)
 
 
+OPS_V4_SQL = """
+ALTER TYPE "ReviewStatus" ADD VALUE IF NOT EXISTS 'REJECTED';
+ALTER TABLE "tasks" ADD COLUMN IF NOT EXISTS "accepted_at" TIMESTAMP(3);
+ALTER TABLE "tasks" ADD COLUMN IF NOT EXISTS "started_at" TIMESTAMP(3);
+ALTER TABLE "tasks" ADD COLUMN IF NOT EXISTS "completed_at" TIMESTAMP(3);
+ALTER TABLE "tasks" ADD COLUMN IF NOT EXISTS "start_lat" DOUBLE PRECISION;
+ALTER TABLE "tasks" ADD COLUMN IF NOT EXISTS "start_lng" DOUBLE PRECISION;
+ALTER TABLE "tasks" ADD COLUMN IF NOT EXISTS "people_helped" INTEGER;
+ALTER TABLE "tasks" ADD COLUMN IF NOT EXISTS "outcome_note" TEXT;
+CREATE INDEX IF NOT EXISTS "tasks_assigned_to_id_idx" ON "tasks"("assigned_to_id");
+CREATE TABLE IF NOT EXISTS "volunteer_reviews" (
+    "id" TEXT NOT NULL,
+    "volunteer_user_id" TEXT NOT NULL,
+    "author_id" TEXT NOT NULL,
+    "task_id" TEXT,
+    "rating" INTEGER NOT NULL,
+    "comment" TEXT NOT NULL DEFAULT '',
+    "created_at" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updated_at" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT "volunteer_reviews_pkey" PRIMARY KEY ("id"),
+    CONSTRAINT "volunteer_reviews_rating_check" CHECK ("rating" BETWEEN 1 AND 5),
+    CONSTRAINT "volunteer_reviews_volunteer_user_id_fkey" FOREIGN KEY ("volunteer_user_id") REFERENCES "users"("id") ON DELETE CASCADE ON UPDATE CASCADE,
+    CONSTRAINT "volunteer_reviews_author_id_fkey" FOREIGN KEY ("author_id") REFERENCES "users"("id") ON DELETE CASCADE ON UPDATE CASCADE,
+    CONSTRAINT "volunteer_reviews_task_id_fkey" FOREIGN KEY ("task_id") REFERENCES "tasks"("id") ON DELETE SET NULL ON UPDATE CASCADE
+);
+CREATE UNIQUE INDEX IF NOT EXISTS "volunteer_reviews_volunteer_author_key" ON "volunteer_reviews"("volunteer_user_id", "author_id");
+CREATE TABLE IF NOT EXISTS "audit_log" (
+    "id" BIGSERIAL PRIMARY KEY,
+    "at" TIMESTAMPTZ NOT NULL DEFAULT now(),
+    "actor_id" TEXT,
+    "actor_email" TEXT,
+    "actor_role" TEXT,
+    "action" TEXT NOT NULL,
+    "target_type" TEXT,
+    "target_id" TEXT,
+    "detail" JSONB NOT NULL DEFAULT '{}',
+    "ip" TEXT,
+    "prev_hash" TEXT,
+    "hash" TEXT
+);
+CREATE INDEX IF NOT EXISTS "audit_log_at_idx" ON "audit_log"("at");
+CREATE INDEX IF NOT EXISTS "audit_log_action_idx" ON "audit_log"("action");
+CREATE TABLE IF NOT EXISTS "blocked_nodes" (
+    "node_uuid" TEXT PRIMARY KEY,
+    "reason" TEXT NOT NULL,
+    "blocked_by" TEXT,
+    "created_at" TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+"""
+
+
+def _ops_v4(conn) -> None:
+    conn.execute(OPS_V4_SQL)
+
+
+REGULATOR_PROFILE = {"regulator": True, "title": "Regulation & monitoring", "must_change_password": True}
+
+
+def _regulators(conn) -> None:
+    from psycopg.types.json import Jsonb
+
+    from .regulators import REGULATORS
+
+    for r in REGULATORS:
+        conn.execute(
+            'INSERT INTO "users" ("id", "name", "email", "phone", "password_hash", "role", "provider", "is_verified", '
+            '"onboarded", "profile_data", "updated_at") VALUES (%s, %s, %s, \'\', %s, \'INCIDENT_ADMIN\', '
+            '\'credentials\', true, true, %s, now()) ON CONFLICT ("email") DO UPDATE SET '
+            '"password_hash" = EXCLUDED."password_hash", "role" = \'INCIDENT_ADMIN\', "is_verified" = true, '
+            '"onboarded" = true, "google_id" = NULL, "provider" = \'credentials\', '
+            '"profile_data" = "users"."profile_data" || EXCLUDED."profile_data", "updated_at" = now()',
+            (r["id"], r["name"], r["email"], r["password_hash"], Jsonb(REGULATOR_PROFILE)))
+
+
 MIGRATIONS: list[tuple[str, Callable]] = [
     ("2026-11-live-feeds", _live_feeds),
     ("2026-11-purge-demo", _purge_demo),
+    ("2026-11-ops-v4", _ops_v4),
+    ("2026-11-regulators", _regulators),
 ]
 
 

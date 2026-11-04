@@ -6,18 +6,34 @@ import androidx.room.OnConflictStrategy
 import androidx.room.Query
 import kotlinx.coroutines.flow.Flow
 
-/** Relay order: unconfirmed first (they still need a gateway), then priority, newest first. */
+/**
+ * Relay order: this phone's own unconfirmed reports first, then other unconfirmed reports (both still need a
+ * gateway), then command broadcasts from the server downlink, then other confirmed copies; within each group by
+ * priority, newest first. Server-confirmed events keep relaying while ttl > 0: that is how the downlink reaches
+ * phones without signal.
+ */
 private const val RELAYABLE_SQL =
     "SELECT * FROM mesh_events WHERE ttl > 0 AND status != 'FAILED' ORDER BY " +
-        "CASE WHEN status = 'SERVER_CONFIRMED' THEN 1 ELSE 0 END, " +
+        "CASE WHEN status != 'SERVER_CONFIRMED' AND createdHere = 1 THEN 0 " +
+        "WHEN status != 'SERVER_CONFIRMED' THEN 1 WHEN fromServer = 1 THEN 2 ELSE 3 END, " +
         "CASE priority WHEN 'CRITICAL' THEN 0 WHEN 'HIGH' THEN 1 WHEN 'MEDIUM' THEN 2 ELSE 3 END, " +
         "observedAt DESC"
+
+/** A broadcast message (a situation update carrying text), as opposed to a field report. */
+private const val IS_MESSAGE = "(type = 'DISASTER_STATUS' AND payloadJson LIKE '%\"message\"%')"
 
 @Dao
 interface MeshDao {
     /** Returns -1 when the eventId already exists — the stable deduplication rule (FR-06). */
     @Insert(onConflict = OnConflictStrategy.IGNORE)
     suspend fun insert(event: MeshEvent): Long
+
+    /** Only for adopting the server's copy of an event (see GatewayUploader); everything else uses [insert]. */
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun replace(event: MeshEvent)
+
+    @Query("SELECT * FROM mesh_events WHERE eventId = :id")
+    suspend fun get(id: String): MeshEvent?
 
     @Query("SELECT * FROM mesh_events ORDER BY observedAt DESC")
     fun observeAll(): Flow<List<MeshEvent>>
@@ -29,8 +45,8 @@ interface MeshDao {
     suspend fun relayable(limit: Int): List<MeshEvent>
 
     /**
-     * Live relay queue for the BLE service. Unconfirmed reports go first (they still need to reach a gateway),
-     * then by priority, newest first. Emits again whenever a report is created, received or changes status.
+     * Live relay queue for the BLE service, in the order above. Emits again whenever a report is created,
+     * received, downloaded or changes status.
      */
     @Query(RELAYABLE_SQL + " LIMIT :limit")
     fun observeRelayable(limit: Int): Flow<List<MeshEvent>>
@@ -39,8 +55,20 @@ interface MeshDao {
     @Query("SELECT eventId FROM mesh_events ORDER BY receivedAt DESC LIMIT :limit")
     suspend fun recentIds(limit: Int): List<String>
 
-    @Query("SELECT * FROM mesh_events WHERE status IN ('QUEUED', 'RELAYED', 'SYNCING') ORDER BY observedAt ASC LIMIT :limit")
+    /** Upload queue. Events fetched from the server downlink are already stored there and never go back up. */
+    @Query("SELECT * FROM mesh_events WHERE status IN ('QUEUED', 'RELAYED', 'SYNCING') AND fromServer = 0 ORDER BY observedAt ASC LIMIT :limit")
     suspend fun outbox(limit: Int): List<MeshEvent>
+
+    // ─── Field rules (Rules.kt): counted over reports and messages created on this phone ───
+
+    @Query("SELECT COUNT(*) FROM mesh_events WHERE createdHere = 1 AND observedAt >= :since AND type = :type AND NOT " + IS_MESSAGE)
+    suspend fun countOwnReportsOfType(type: EventType, since: Long): Int
+
+    @Query("SELECT COUNT(*) FROM mesh_events WHERE createdHere = 1 AND observedAt >= :since AND NOT " + IS_MESSAGE)
+    suspend fun countOwnReports(since: Long): Int
+
+    @Query("SELECT COUNT(*) FROM mesh_events WHERE createdHere = 1 AND observedAt >= :since AND " + IS_MESSAGE)
+    suspend fun countOwnMessages(since: Long): Int
 
     @Query("UPDATE mesh_events SET status = :status WHERE eventId IN (:ids)")
     suspend fun setStatus(ids: List<String>, status: DeliveryStatus)
@@ -61,7 +89,7 @@ interface MeshDao {
     @Query("UPDATE mesh_events SET status = 'QUEUED' WHERE status = 'SYNCING'")
     suspend fun resetSyncing()
 
-    /** OD-04: keep confirmed events on the device for 72 hours after sync. */
+    /** OD-04: keep confirmed events on the device for 72 hours after sync (downlinked ones count from download). */
     @Query("DELETE FROM mesh_events WHERE status = 'SERVER_CONFIRMED' AND confirmedAt < :cutoff")
     suspend fun purgeConfirmedBefore(cutoff: Long): Int
 }

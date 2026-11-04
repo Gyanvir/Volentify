@@ -9,15 +9,16 @@ from urllib.parse import urlencode
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from fastapi.responses import RedirectResponse
 
-from ..core import db
+from ..core import audit, db
 from ..core.config import get_settings
 from ..core.security import (
     ELEVATED_ROLES, NONCE_COOKIE, ROLE_PASS, SESSION_COOKIE, RateLimiter, client_key, hash_password, issue_session,
     muster_code, muster_signature, require_roles, require_session, session_cookie_kwargs, verify_google_id_token,
     verify_password,
 )
+from ..data.regulators import RESERVED_DOMAIN
 from ..schemas import (
-    AuthResponse, GoogleAuthRequest, LoginRequest, OnboardRequest, RegisterRequest, RoleUpdate, User,
+    AuthResponse, GoogleAuthRequest, LoginRequest, OnboardRequest, PasswordChange, RegisterRequest, RoleUpdate, User,
 )
 from .common import new_id, now, tag
 
@@ -36,7 +37,13 @@ def to_user(row: dict) -> User:
     return User.model_validate({**row, "profile_data": row.get("profile_data") or {}, "muster": muster})
 
 
+def is_regulator(row: Optional[dict]) -> bool:
+    return bool(row and (row.get("profile_data") or {}).get("regulator"))
+
+
 def needs_onboarding(row: dict) -> bool:
+    if is_regulator(row):  # provisioned accounts: no wizard, and no way to pick a different role through it
+        return False
     phone = row.get("phone") or ""
     return not row.get("onboarded") or len(phone) != 10
 
@@ -46,14 +53,23 @@ def _start_session(response: Response, row: dict) -> AuthResponse:
     return AuthResponse(user=to_user(row), requires_onboarding=needs_onboarding(row))
 
 
-def _auto_verify(email: str) -> bool:
+def _auto_verify(email: str, provider: str) -> bool:
+    """VOLENTIFY_ADMIN_EMAILS elevates only Google sign-ins, whose email ownership Google has verified.
+
+    Credential sign-up does not prove the address belongs to the person typing it, so an allowlisted address
+    registered with a password stays an ordinary account until an administrator verifies it.
+    """
     settings = get_settings()
-    return email.lower() in settings.admin_emails
+    return provider == "google" and email.lower() in settings.admin_emails
+
+
+def _reserved(email: str) -> bool:
+    return email.lower().rsplit("@", 1)[-1] == RESERVED_DOMAIN
 
 
 def _blank_user(name: str, email: str, provider: str, **extra) -> dict:
     ts = now()
-    admin = _auto_verify(email)
+    admin = _auto_verify(email, provider)
     return {"id": new_id("usr"), "name": name, "email": email.lower(), "phone": "", "password_hash": None,
             "role": "INCIDENT_ADMIN" if admin else "CITIZEN", "state_district": None, "lat": None, "lng": None,
             "provider": provider, "google_id": None, "avatar_url": None, "blood_group": None,
@@ -117,6 +133,8 @@ def google_login(body: GoogleAuthRequest, request: Request, response: Response):
              status_code=status.HTTP_201_CREATED)
 def register(body: RegisterRequest, request: Request, response: Response):
     _login_limiter.check(client_key(request))
+    if _reserved(body.email):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, f"@{RESERVED_DOMAIN} addresses are reserved for platform staff")
     user = _blank_user(body.name.strip(), body.email, "credentials", password_hash=hash_password(body.password))
     try:
         row, source = db.write(lambda s: s.create_user(user))
@@ -131,9 +149,29 @@ def login(body: LoginRequest, request: Request, response: Response):
     _login_limiter.check(client_key(request))
     row, source = db.read(lambda s: s.get_user_by_email(body.email.strip().lower()))
     if not row or not verify_password(body.password, row.get("password_hash")):
+        if row and row.get("role") in ELEVATED_ROLES:
+            audit.record("auth.login_failed", {"sub": row["id"], "email": row["email"], "role": row["role"]},
+                         target_type="user", target_id=row["id"], request=request)
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Email or password is incorrect")
     tag(response, source)
+    if row.get("role") in ELEVATED_ROLES:
+        audit.record("auth.login", {"sub": row["id"], "email": row["email"], "role": row["role"]},
+                     target_type="user", target_id=row["id"], request=request)
     return _start_session(response, row)
+
+
+@router.post("/auth/password", status_code=status.HTTP_204_NO_CONTENT)
+def change_password(body: PasswordChange, request: Request, claims: dict = Depends(require_session)):
+    _login_limiter.check(client_key(request))
+    row, _ = db.read(lambda s: s.get_user(claims["sub"]))
+    if not row or not verify_password(body.current_password, row.get("password_hash")):
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Your current password is incorrect")
+    if body.new_password == body.current_password:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Choose a password you have not used here before")
+    profile = {**(row.get("profile_data") or {}), "must_change_password": False}
+    db.write(lambda s: s.update_user(row["id"], {"password_hash": hash_password(body.new_password),
+                                                 "profile_data": profile}))
+    audit.record("auth.password_change", claims, target_type="user", target_id=row["id"], request=request)
 
 
 @router.post("/auth/logout", status_code=status.HTTP_204_NO_CONTENT)
@@ -162,16 +200,20 @@ def onboard(body: OnboardRequest, response: Response, claims: dict = Depends(req
         row = store.get_user(claims["sub"])
         if not row:
             raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Session expired")
-        elevated = body.role in ELEVATED_ROLES
-        verified = row["is_verified"] or not elevated or settings.is_local or _auto_verify(row["email"])
-        code = muster_code(row["id"], body.role)
+        role = "INCIDENT_ADMIN" if is_regulator(row) else body.role
+        elevated = role in ELEVATED_ROLES
+        verified = (row["is_verified"] and role == row["role"]) or not elevated or settings.is_local \
+            or _auto_verify(row["email"], row.get("provider") or "credentials")
+        code = muster_code(row["id"], role)
+        profile = {**body.profile, **{k: v for k, v in (row.get("profile_data") or {}).items()
+                                      if k in {"regulator", "title", "must_change_password"}}}
         updated = store.update_user(row["id"], {
-            "phone": body.phone, "role": body.role, "state_district": body.state_district,
+            "phone": body.phone, "role": role, "state_district": body.state_district,
             "lat": body.lat, "lng": body.lng, "blood_group": body.blood_group,
-            "emergency_contact": body.emergency_contact, "profile_data": body.profile, "onboarded": True,
+            "emergency_contact": body.emergency_contact, "profile_data": profile, "onboarded": True,
             "is_verified": verified, "muster_code": code, "muster_issued_at": issued,
         })
-        if body.role == "VOLUNTEER":
+        if role == "VOLUNTEER":
             store.upsert_volunteer_profile(row["id"], {
                 "skills": body.skills, "equipment": body.equipment,
                 "lat": body.lat if body.lat is not None else 20.59,
@@ -195,15 +237,44 @@ def list_users(response: Response, _: dict = Depends(require_roles("INCIDENT_ADM
 
 
 @router.patch("/admin/users/{user_id}", response_model=User)
-def update_user(user_id: str, body: RoleUpdate, response: Response,
+def update_user(user_id: str, body: RoleUpdate, request: Request, response: Response,
                 claims: dict = Depends(require_roles("INCIDENT_ADMIN"))):
     if user_id == claims["sub"] and body.role != "INCIDENT_ADMIN":
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "You cannot remove your own administrator role")
     fields: dict[str, Optional[object]] = {"role": body.role}
     if body.is_verified is not None:
         fields["is_verified"] = body.is_verified
-    row, source = db.write(lambda s: s.update_user(user_id, fields))
+
+    def update(store):
+        target = store.get_user(user_id)
+        if not target:
+            return None, None
+        if is_regulator(target) and not is_regulator(store.get_user(claims["sub"])):
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "Only platform regulators can change a regulator account")
+        return target, store.update_user(user_id, fields)
+
+    (before, row), source = db.write(update)
     if not row:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "User not found")
     tag(response, source)
+    audit.record("admin.user_update", claims, target_type="user", target_id=user_id, request=request,
+                 detail={"role": [before["role"], row["role"]], "verified": [before["is_verified"], row["is_verified"]]})
     return to_user(row)
+
+
+@router.get("/admin/audit")
+def audit_log(response: Response, limit: int = 200, action: Optional[str] = None, actor: Optional[str] = None,
+              _: dict = Depends(require_roles("INCIDENT_ADMIN"))):
+    """Audit trail for regulation and monitoring, newest first."""
+    limit = max(1, min(limit, 1000))
+    rows, source = db.read(lambda s: s.list_audit(limit, action, actor))
+    tag(response, source)
+    return rows
+
+
+@router.get("/admin/audit/verify")
+def audit_verify(response: Response, _: dict = Depends(require_roles("INCIDENT_ADMIN"))):
+    """Re-compute the hash chain over the most recent 5,000 entries; reports the first altered or missing entry."""
+    rows, source = db.read(lambda s: s.list_audit(5000))
+    tag(response, source)
+    return audit.verify_chain(list(reversed(rows)))

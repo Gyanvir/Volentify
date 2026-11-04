@@ -65,7 +65,7 @@ export default function ResearchPage() {
           <pre className="overflow-x-auto rounded-xl border border-line bg-ink-900 p-4 font-mono text-[0.8125rem] leading-relaxed text-sand">{`@software{volentify_2026,
   title  = {Volentify: Disaster Intelligence, Offline Mesh Coordination and ML Forecasting},
   year   = {2026},
-  url    = {https://github.com/thehimanshubansal/Volentify},
+  url    = {https://github.com/Gyanvir/Volentify},
   license= {MIT}
 }`}</pre>
         </Prose>

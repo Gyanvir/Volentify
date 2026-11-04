@@ -14,6 +14,7 @@ import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -21,6 +22,8 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import okhttp3.HttpUrl
+import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -30,9 +33,15 @@ import org.json.JSONException
 import org.json.JSONObject
 import org.volentify.mesh.data.DeliveryStatus
 import org.volentify.mesh.data.Envelope
+import org.volentify.mesh.data.MeshDao
 import org.volentify.mesh.data.MeshDatabase
+import org.volentify.mesh.data.Rules
 import org.volentify.mesh.data.Settings
+import org.volentify.mesh.location.LocationProvider
 import java.io.IOException
+import java.text.DateFormat
+import java.util.Date
+import java.util.Locale
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 
@@ -40,6 +49,7 @@ import java.util.concurrent.atomic.AtomicBoolean
  * Gateway outbox sync (FR-08, AT-06…AT-08). Any phone with internet uploads everything it holds —
  * its own reports and those relayed to it — in batches of up to 100. Records are only marked
  * server-confirmed after a 200 acknowledgement; network or 5xx failures retry with exponential backoff.
+ * After uploading, the same pass fetches the downlink (command broadcasts, official advisories, incidents).
  *
  * Two paths share one uploader: an immediate upload whenever the phone has validated internet (new report,
  * report relayed in, network comes back), and WorkManager as the durable backup that survives process death.
@@ -74,7 +84,16 @@ object GatewaySync {
         WorkManager.getInstance(app).enqueueUniqueWork(ONE_SHOT, ExistingWorkPolicy.KEEP, request)
     }
 
-    /** Immediate path. Requests that arrive while an upload runs are coalesced into one more pass. */
+    /** "Sync now": upload, and fetch the downlink straight away even if the last fetch was under a minute ago. */
+    fun refreshNow(context: Context) {
+        GatewayUploader.expireDownlink()
+        requestSoon(context)
+    }
+
+    /**
+     * Immediate path. Requests that arrive while an upload runs are coalesced into one more pass. Also called every
+     * minute or so while the app is on screen or the relay runs, which is what keeps the downlink live.
+     */
     fun uploadNow(context: Context) {
         val app = context.applicationContext
         if (!isOnline(app)) return
@@ -107,9 +126,15 @@ object GatewaySync {
     }
 }
 
-/** The single upload loop, used by the immediate path and by the WorkManager job. */
+/** The single upload loop (then the downlink), used by the immediate path and by the WorkManager job. */
 object GatewayUploader {
     enum class Outcome { DONE, RETRY }
+
+    /** How the upload pass ended. OFFLINE: the server couldn't be reached at all, so the downlink waits too. */
+    private enum class Pass { DONE, RETRY, OFFLINE }
+
+    private const val DOWNLINK_INTERVAL_MS = 60_000L
+    private const val DOWNLINK_RADIUS_KM = 75
 
     private val lock = Mutex()
     private val http by lazy {
@@ -117,13 +142,19 @@ object GatewayUploader {
     }
     private val json = "application/json".toMediaType()
 
-    suspend fun run(context: Context): Outcome = lock.withLock { withContext(Dispatchers.IO) { upload(context) } }
+    suspend fun run(context: Context): Outcome = lock.withLock {
+        withContext(Dispatchers.IO) {
+            val startedAt = System.currentTimeMillis()
+            val settings = Settings(context)
+            val dao = MeshDatabase.get(context).dao()
+            val pass = upload(context, settings, dao)
+            if (pass != Pass.OFFLINE) downlink(context, settings, dao, startedAt)
+            if (pass == Pass.DONE) Outcome.DONE else Outcome.RETRY
+        }
+    }
 
-    private suspend fun upload(context: Context): Outcome {
-        val settings = Settings(context)
-        val dao = MeshDatabase.get(context).dao()
-        dao.purgeConfirmedBefore(System.currentTimeMillis() - TimeUnit.HOURS.toMillis(72))
-        refreshIncidents(settings)
+    private suspend fun upload(context: Context, settings: Settings, dao: MeshDao): Pass {
+        dao.purgeConfirmedBefore(System.currentTimeMillis() - Rules.CONFIRMED_RETENTION_MS)
 
         // A gateway token is optional: without one, reports still upload as public field reports the moment the
         // phone has any internet (mobile data or Wi-Fi), so they reach the website as disaster data.
@@ -166,7 +197,7 @@ object GatewayUploader {
                         resp.code == 429 -> {
                             dao.setStatus(ids, DeliveryStatus.QUEUED)
                             settings.lastSyncMessage = "Server is busy; retrying shortly"
-                            return Outcome.RETRY
+                            return Pass.RETRY
                         }
                         resp.code == 422 && ids.size > 1 -> {
                             // Isolate the invalid report by retrying one at a time.
@@ -180,27 +211,124 @@ object GatewayUploader {
                         else -> {
                             dao.setStatus(ids, DeliveryStatus.QUEUED)
                             settings.lastSyncMessage = "Server unavailable (${resp.code}); retrying"
-                            return Outcome.RETRY
+                            return Pass.RETRY
                         }
                     }
                 }
             } catch (e: IOException) {
                 dao.resetSyncing()
                 settings.lastSyncMessage = "No connection to the server; will retry"
-                return Outcome.RETRY
+                return Pass.OFFLINE
             } catch (e: IllegalArgumentException) {
                 // Malformed server address in Settings: nothing will succeed until it is fixed.
                 dao.resetSyncing()
                 settings.lastSyncMessage = "Check the server address in Settings"
-                return Outcome.DONE
+                return Pass.DONE
             }
         }
-        return Outcome.DONE
+        return Pass.DONE
+    }
+
+    // ─── Downlink: command broadcasts and official advisories for phones in the field ───
+
+    @Volatile private var downlinkAt = 0L
+
+    /** "Sync now": fetch on the next pass even if the last fetch was under a minute ago. */
+    fun expireDownlink() {
+        downlinkAt = 0L
+    }
+
+    /**
+     * GET /api/mesh/downlink after the upload loop, at most once a minute. New events are stored as server-confirmed
+     * (never uploaded again, see [MeshDao.outbox]) and, while their ttl lasts, join the Bluetooth relay queue, so a
+     * phone that briefly gets signal carries command's news back into the offline mesh. The reply also carries the
+     * incident list, so it replaces the separate GET /api/mesh/incidents (still used against older servers).
+     */
+    private suspend fun downlink(context: Context, settings: Settings, dao: MeshDao, startedAt: Long) {
+        if (startedAt - downlinkAt < DOWNLINK_INTERVAL_MS) return
+        downlinkAt = startedAt
+        var token = settings.gatewayToken
+        try {
+            val url = downlinkUrl(context, settings)
+            while (true) {
+                val request = Request.Builder()
+                    .url(url)
+                    .apply { token?.let { header("Authorization", "Bearer $it") } }
+                    .build()
+                val (code, text) = http.newCall(request).execute().use { it.code to it.body?.string().orEmpty() }
+                when {
+                    code in 200..299 -> {
+                        applyDownlink(text, settings, dao, System.currentTimeMillis())
+                        return
+                    }
+                    code == 401 && token != null -> {
+                        // Expired gateway token: forget it and fetch the public downlink instead, as uploads do.
+                        settings.gatewayToken = null
+                        token = null
+                    }
+                    code == 404 -> {
+                        // Server without the downlink yet: keep the incident list fresh the old way.
+                        refreshIncidents(settings)
+                        return
+                    }
+                    (code == 400 || code == 422) && settings.downlinkSince != null -> {
+                        // The server didn't accept our cursor: start again from its default window next time.
+                        settings.downlinkSince = null
+                        return
+                    }
+                    else -> return
+                }
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            // Network trouble, a malformed address or reply: the next pass tries again. Uploads are unaffected.
+        }
+    }
+
+    private fun downlinkUrl(context: Context, settings: Settings): HttpUrl =
+        "${settings.serverUrl}/api/mesh/downlink".toHttpUrl().newBuilder().apply {
+            settings.downlinkSince?.let { addQueryParameter("since", it) }
+            // Nearby news only. Rounded to 2 decimals (about 1 km) so the request never pins down the phone.
+            LocationProvider.lastKnown(context)?.let { fix ->
+                addQueryParameter("lat", coarse(fix.lat))
+                addQueryParameter("lng", coarse(fix.lng))
+                addQueryParameter("radius_km", DOWNLINK_RADIUS_KM.toString())
+            }
+        }.build()
+
+    private fun coarse(v: Double): String = String.format(Locale.ROOT, "%.2f", v)
+
+    private suspend fun applyDownlink(text: String, settings: Settings, dao: MeshDao, now: Long) {
+        val reply = Envelope.parseDownlink(text, now)
+        var added = 0
+        for (event in reply.events) {
+            if (dao.insert(event) != -1L) {
+                added++
+            } else if (Envelope.isOfficialPayload(event.payloadJson)) {
+                // Already here as an unverifiable Bluetooth relay: the server vouches for it, so its copy replaces
+                // ours (content included) and it shows as official. Own reports are left alone.
+                val local = dao.get(event.eventId)
+                if (local != null && !local.createdHere && !local.fromServer) {
+                    dao.replace(event.copy(
+                        ttl = minOf(event.ttl, local.ttl), hopCount = maxOf(event.hopCount, local.hopCount),
+                        relayCount = local.relayCount, lastRelayAt = local.lastRelayAt,
+                    ))
+                }
+            }
+        }
+        reply.incidentsJson?.let {
+            settings.incidentsJson = it
+            incidentsFetchedAt = now
+        }
+        reply.serverTime?.let { settings.downlinkSince = it }
+        settings.lastDownlinkMessage = "Updates from the server: " + (if (added == 0) "nothing new" else "$added new") +
+            " (checked ${DateFormat.getTimeInstance(DateFormat.SHORT).format(Date(now))})"
     }
 
     @Volatile private var incidentsFetchedAt = 0L
 
-    /** Cached incident list for offline report linking; refreshed at most every five minutes. */
+    /** Incident list for servers without the downlink; refreshed at most every five minutes. */
     private fun refreshIncidents(settings: Settings) {
         val now = System.currentTimeMillis()
         if (now - incidentsFetchedAt < 5 * 60_000L) return

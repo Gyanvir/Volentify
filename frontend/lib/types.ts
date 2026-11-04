@@ -9,7 +9,7 @@ export type MeshPriority = 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL';
 export type MeshEventType =
   | 'PERSON_RESCUED' | 'PERSON_MISSING' | 'PERSON_TRAPPED' | 'MEDICAL_EMERGENCY' | 'FIRE' | 'FLOOD'
   | 'RESOURCE_REQUEST' | 'VOLUNTEER_STATUS' | 'DISASTER_STATUS';
-export type ReviewStatus = 'UNREVIEWED' | 'REVIEWED' | 'PROMOTED';
+export type ReviewStatus = 'UNREVIEWED' | 'REVIEWED' | 'PROMOTED' | 'REJECTED';
 export type DataSource = 'database' | 'fallback' | 'memory' | 'request';
 
 export interface Disaster {
@@ -33,12 +33,16 @@ export interface Task {
   required_skill: string; lat: number; lng: number; location_name: string; quantity_needed: number;
   status: TaskStatus; disaster_id: string; created_by_id: string; assigned_to_id: string | null;
   created_at: string; updated_at: string;
+  accepted_at?: string | null; started_at?: string | null; completed_at?: string | null;
+  start_lat?: number | null; start_lng?: number | null; people_helped?: number | null; outcome_note?: string | null;
 }
 
 export interface Alert {
   id: string; code: string; title: string; category: string; level: Severity; location: string;
   state: string; description: string; advisory: string; disaster_id: string | null;
   sender_id: string | null; created_at: string;
+  /** BROADCAST: issued by verified incident command. AUTO: generated from a live-feed incident — never official. */
+  kind?: 'BROADCAST' | 'AUTO'; source?: string | null; source_url?: string | null;
 }
 
 export interface Volunteer {
@@ -130,6 +134,8 @@ export interface DispatchResult {
 interface Facility_ {
   id: string; name: string; address: string; lat: number; lng: number; osm_url: string;
   incident_id: string; incident_title: string; distance_km: number;
+  /** Inside the incident's mapped hazard radius: nearest, but may itself be affected. */
+  inside_zone?: boolean;
 }
 export interface Hospital extends Facility_ {
   kind: string; beds: number | null; phone: string; emergency: boolean;
@@ -141,6 +147,8 @@ export interface Shelter extends Facility_ {
 export interface Resources {
   hotlines: { label: string; number: string }[]; hospitals: Hospital[]; shelters: Shelter[];
   mode: 'LIVE' | 'OFFLINE' | 'NO_INCIDENTS'; fetched_at: string | null; attribution: string;
+  /** Overpass query the browser can run itself when the server couldn't reach OpenStreetMap. */
+  query?: string | null;
 }
 
 export interface Dossier { disaster: Disaster; evidence: Evidence[]; tasks: Task[]; alerts: Alert[] }
@@ -165,4 +173,75 @@ export interface BulletinFeed { source: string; mode: 'LIVE' | 'CACHED' | 'OFFLI
 export interface Health {
   status: string; system: string; version: string; database: 'ONLINE' | 'DEGRADED' | 'FALLBACK';
   ml_inference: string; inference_selftest_ms: number;
+}
+
+export interface Recommendation {
+  score: number; distance_km: number | null; skill: string; skill_match: 'exact' | 'related' | 'general';
+  qualified: boolean; recommended: boolean; reason: string;
+}
+export interface Recommendations {
+  volunteer_id: string; skills: string[]; located: boolean; location_name: string | null; radius_km: number;
+  tasks: (Recommendation & { task_id: string })[];
+  reports: (Recommendation & { event_id: string })[];
+}
+
+export interface Review {
+  id: string; rating: number; comment: string; author_name: string; author_role: Role; task_code: string | null;
+  created_at: string; updated_at: string;
+}
+
+export interface MissionHistoryItem {
+  id: string; code: string; title: string; urgency: Severity; status: TaskStatus; required_skill: string;
+  location_name: string; disaster_id: string; disaster_title: string; created_at: string;
+  accepted_at: string | null; started_at: string | null; completed_at: string | null; people_helped: number | null;
+  outcome_note?: string | null;
+}
+
+export interface VolunteerProfileData {
+  volunteer: Volunteer; is_self: boolean; member_since: string | null; district: string | null;
+  avatar_url: string | null; badge: string;
+  stats: {
+    missions_completed: number; missions_active: number; hours: number; people_helped: number;
+    median_minutes_to_start: number | null; average_rating: number | null; reviews: number;
+    rating_counts: Record<'1' | '2' | '3' | '4' | '5', number>;
+  };
+  history: MissionHistoryItem[]; reviews: Review[]; can_review: boolean; viewer_review: Review | null;
+  reviewable_missions: { id: string; code: string; title: string }[];
+}
+
+type Counts = Record<string, number>;
+export interface TransparencyReport {
+  generated_at: string; months: string[]; data_source: DataSource;
+  incidents: { total: number; active: number; closed: number; by_source: Counts; by_category: Counts; by_severity: Counts; monthly: number[] };
+  alerts: { broadcasts: number; last_30_days: number; by_level: Counts };
+  mesh: {
+    events: number; reports: number; messages: number; unreviewed: number; reviewed: number; promoted: number; rejected: number;
+    by_type: Counts; by_priority: Counts; nodes: number; nodes_active: number; phones_reporting: number;
+    median_relay_minutes: number | null; blocked_nodes: number; monthly: number[];
+  };
+  missions: {
+    total: number; open: number; assigned: number; in_progress: number; completed: number; cancelled: number; dispatched: number;
+    people_helped: number; volunteer_hours: number; responders_engaged: number;
+    median_minutes_to_accept: number | null; median_minutes_to_start: number | null; median_minutes_to_complete: number | null;
+    by_skill: Counts; by_urgency: Counts; completed_monthly: number[]; created_monthly: number[];
+  };
+  people: { helped_by_missions: number; rescues_reported: number; trapped_reported: number; missing_reported: number };
+  volunteers: { registered: number; verified: number; available: number; busy: number; off_duty: number; skills: Counts; reviews: number; average_rating: number | null };
+  accounts: { total: number; by_role: Counts; verified_elevated: number };
+  governance: { audit_entries_180d: number; audit_by_action: Counts; report_retention_days: number; audit_retention_days: number; mission_start_limit_minutes: number };
+}
+
+export interface PastDisaster {
+  id: string; title: string; category: string; severity: Severity; lat: number; lng: number; state: string | null;
+  location: string | null; started_at: string | null; source: string | null; source_url: string | null;
+  summary: string | null; status: 'CLOSED' | 'PAST' | 'ACTIVE';
+}
+export interface DisasterHistory {
+  months: number; items: PastDisaster[]; archive_status: Record<string, string>; fetched_at: string | null; attribution: string;
+}
+
+export interface AuditEntry {
+  id: number; at: string; actor_id: string | null; actor_email: string | null; actor_role: string | null; action: string;
+  target_type: string | null; target_id: string | null; detail: Record<string, unknown>; ip: string | null;
+  prev_hash: string | null; hash: string | null;
 }

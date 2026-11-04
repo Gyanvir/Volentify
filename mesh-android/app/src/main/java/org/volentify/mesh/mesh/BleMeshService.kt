@@ -28,6 +28,7 @@ import android.content.pm.ServiceInfo
 import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
+import android.os.BatteryManager
 import android.os.Build
 import android.os.ParcelUuid
 import androidx.core.app.NotificationCompat
@@ -37,6 +38,7 @@ import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
@@ -47,6 +49,7 @@ import org.volentify.mesh.R
 import org.volentify.mesh.data.Envelope
 import org.volentify.mesh.data.MeshDatabase
 import org.volentify.mesh.data.MeshEvent
+import org.volentify.mesh.data.Rules
 import org.volentify.mesh.sync.GatewaySync
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
@@ -63,6 +66,10 @@ import java.util.concurrent.atomic.AtomicInteger
  * Relaying is event-driven so a report moves on within seconds of arriving: a peer is contacted as soon as this
  * phone holds something that peer hasn't had, and every nearby peer is tried the moment a new report is created
  * or relayed in. Peers that fail back off (3 s, doubling to 30 s); peers with nothing new are never re-contacted.
+ *
+ * Battery saver: at 15 % or less and not charging, scanning drops from continuous to 5 s every 30 s and advertising
+ * to the low-power interval; full speed returns when charging or above 20 %. Relaying itself is unchanged, and
+ * peers already seen are still offered new reports straight away.
  */
 @SuppressLint("MissingPermission") // every entry point checks MeshPermissions.bluetoothGranted first
 class BleMeshService : LifecycleService() {
@@ -93,6 +100,15 @@ class BleMeshService : LifecycleService() {
         private const val MAX_WRITE_MTU = 515
         /** Android 7+ silently downgrades scans running longer than 30 minutes to opportunistic; restart before. */
         private const val SCAN_RESTART_MS = 25 * 60_000L
+        private const val SAVER_ON_PERCENT = 15
+        /** Hysteresis, so the mode doesn't flap around 15–16 %. */
+        private const val SAVER_OFF_PERCENT = 20
+        private const val SAVER_SCAN_MS = 5_000L
+        private const val SAVER_PERIOD_MS = 30_000L
+        /** While online, sync (and so check the server downlink) this often; the uploader spaces fetches to 1/min. */
+        private const val POLL_MS = 61_000L
+        private const val SAVER_POLL_MS = 5 * 60_000L
+        private const val PURGE_EVERY_MS = 30 * 60_000L
 
         fun start(context: Context) {
             // Android 14 refuses a connectedDevice foreground service without a Bluetooth runtime permission, and
@@ -130,6 +146,17 @@ class BleMeshService : LifecycleService() {
     @Volatile private var networkValidated = false
     private var networkCallbackRegistered = false
     private var scanStartedAt = 0L
+    @Volatile private var batterySaver = false
+    /** Duty-cycled scanning while in battery saver; null at full speed. */
+    private var saverScanJob: Job? = null
+    private var lastPollAt = 0L
+    private var lastPurgeAt = 0L
+
+    /**
+     * Android 10–11 can't restart a scan from the background: this service has no location FGS type, so a scan
+     * restarted there loses location access and receives nothing at all. There the scan stays continuous.
+     */
+    private val canRestartScan = Build.VERSION.SDK_INT !in Build.VERSION_CODES.Q..Build.VERSION_CODES.R
 
     override fun onCreate() {
         super.onCreate()
@@ -140,10 +167,11 @@ class BleMeshService : LifecycleService() {
             return
         }
         openServer()
+        batterySaver = wantsBatterySaver()
         advertise()
-        scan()
+        if (batterySaver && canRestartScan) startSaverScan() else scan()
         watchNetwork()
-        MeshState.update { it.copy(running = true, error = null) }
+        MeshState.update { it.copy(running = true, error = null, batterySaver = batterySaver) }
 
         // Every change to the stored reports (created here, relayed in, relayed out, synced) refreshes the queue
         // and the digest, then offers anything new to the peers around us straight away.
@@ -165,12 +193,29 @@ class BleMeshService : LifecycleService() {
                 backoff.keys.removeAll { !peers.containsKey(it) }
                 val nearby = peers.values.count { now - it.lastSeen <= PEER_SEEN_WINDOW_MS }
                 MeshState.update { it.copy(peersNearby = nearby) }
-                // Skipped on Android 10–11: there a scan restarted from the background loses location access
-                // (this service has no location FGS type) and would receive nothing at all.
-                if (now - scanStartedAt > SCAN_RESTART_MS &&
-                    Build.VERSION.SDK_INT !in Build.VERSION_CODES.Q..Build.VERSION_CODES.R
-                ) {
+                // Skipped on Android 10–11 (see canRestartScan), and in battery saver, where scans are short anyway.
+                if (!batterySaver && canRestartScan && now - scanStartedAt > SCAN_RESTART_MS) {
                     restartScan()
+                }
+                val saver = wantsBatterySaver()
+                if (saver != batterySaver) setBatterySaver(saver)
+                // Online: upload anything waiting and fetch the downlink, so command broadcasts reach this phone
+                // (and, through its relay queue, phones without signal) within a minute or so.
+                val pollEvery = if (batterySaver) SAVER_POLL_MS else POLL_MS
+                if (networkValidated && now - lastPollAt >= pollEvery) {
+                    lastPollAt = now
+                    GatewaySync.uploadNow(applicationContext)
+                }
+                // OD-04 applies offline too: confirmed copies leave the phone 72 hours after confirmation.
+                if (now - lastPurgeAt >= PURGE_EVERY_MS) {
+                    lastPurgeAt = now
+                    try {
+                        dao.purgeConfirmedBefore(now - Rules.CONFIRMED_RETENTION_MS)
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (_: Exception) {
+                        // A database hiccup must not stop this loop (nothing above it handles exceptions).
+                    }
                 }
             }
         }
@@ -191,8 +236,59 @@ class BleMeshService : LifecycleService() {
             }
             networkCallbackRegistered = false
         }
-        MeshState.update { it.copy(running = false, peersNearby = 0) }
+        MeshState.update { it.copy(running = false, peersNearby = 0, batterySaver = false) }
         super.onDestroy()
+    }
+
+    // ─── Battery saver ──────────────────────────────────────────────────────
+
+    /** On at ≤ 15 % while not charging; off when charging or above 20 %; unchanged in between or when unknown. */
+    private fun wantsBatterySaver(): Boolean {
+        val bm = getSystemService(BatteryManager::class.java) ?: return false
+        val level = bm.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY)
+        return when {
+            level !in 0..100 -> false // some devices can't report it: stay at full speed
+            bm.isCharging -> false
+            level <= SAVER_ON_PERCENT -> true
+            level > SAVER_OFF_PERCENT -> false
+            else -> batterySaver
+        }
+    }
+
+    private fun setBatterySaver(on: Boolean) {
+        batterySaver = on
+        MeshState.update { it.copy(batterySaver = on) }
+        restartAdvertising()
+        if (!canRestartScan) return
+        saverScanJob?.cancel()
+        saverScanJob = null
+        stopScan()
+        if (on) {
+            startSaverScan()
+        } else {
+            try {
+                scan()
+            } catch (_: SecurityException) {
+            } catch (_: IllegalStateException) {
+            }
+        }
+    }
+
+    /** Scan 5 s every 30 s (one scan start per 30 s, well inside Android's 5-starts-per-30-s limit). */
+    private fun startSaverScan() {
+        saverScanJob = lifecycleScope.launch {
+            while (true) {
+                try {
+                    scan()
+                } catch (_: SecurityException) {
+                } catch (_: IllegalStateException) {
+                    // Bluetooth was switched off; try again next cycle.
+                }
+                delay(SAVER_SCAN_MS)
+                stopScan()
+                delay(SAVER_PERIOD_MS - SAVER_SCAN_MS)
+            }
+        }
     }
 
     // ─── Foreground notification ───────────────────────────────────────────
@@ -318,9 +414,10 @@ class BleMeshService : LifecycleService() {
 
     private fun advertise() {
         val advertiser = adapter?.bluetoothLeAdvertiser ?: return
-        // Low-latency advertising (~100 ms interval) lets peers discover this phone within a second or two.
+        // Low-latency advertising (~100 ms interval) lets peers discover this phone within a second or two; in
+        // battery saver the ~1 s low-power interval still lets a peer find it within a few seconds.
         val settings = AdvertiseSettings.Builder()
-            .setAdvertiseMode(AdvertiseSettings.ADVERTISE_MODE_LOW_LATENCY)
+            .setAdvertiseMode(if (batterySaver) AdvertiseSettings.ADVERTISE_MODE_LOW_POWER else AdvertiseSettings.ADVERTISE_MODE_LOW_LATENCY)
             .setTxPowerLevel(AdvertiseSettings.ADVERTISE_TX_POWER_HIGH)
             .setConnectable(true)
             .build()
@@ -360,6 +457,23 @@ class BleMeshService : LifecycleService() {
         } catch (_: SecurityException) {
         } catch (_: IllegalStateException) {
             // Bluetooth was switched off; nothing to scan with.
+        }
+    }
+
+    private fun stopScan() {
+        try {
+            adapter?.bluetoothLeScanner?.stopScan(scanCallback)
+        } catch (_: SecurityException) {
+        } catch (_: IllegalStateException) {
+        }
+    }
+
+    private fun restartAdvertising() {
+        try {
+            adapter?.bluetoothLeAdvertiser?.stopAdvertising(advertiseCallback)
+            advertise()
+        } catch (_: SecurityException) {
+        } catch (_: IllegalStateException) {
         }
     }
 

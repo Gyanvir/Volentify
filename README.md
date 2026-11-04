@@ -1,182 +1,108 @@
-# Volentify
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="frontend/public/brand/volentify-logo.svg">
+    <img src="frontend/public/brand/volentify-logo-light.svg" alt="Volentify" width="360">
+  </picture>
+</p>
 
-Disaster intelligence, offline mesh coordination and volunteer dispatch for India.
+<p align="center"><strong>Disaster intelligence, offline mesh reporting and volunteer dispatch for India.</strong></p>
 
-Volentify gives incident commanders, NGOs, volunteers and citizens one shared picture of an
-emergency: a 2D/3D tactical map, field reports that survive network collapse through the
-Volentify Mesh companion app, multilingual triage, storm-surge forecasting and a dispatch engine
-that matches the right responder to the right mission without wasting scarce specialists.
+<p align="center">
+  <a href="https://volentify.vercel.app">Open Volentify</a> ·
+  <a href="https://volentify.vercel.app/map">Live map</a> ·
+  <a href="https://github.com/Gyanvir/Volentify/releases/latest/download/volentify-mesh.apk">Android app (APK)</a> ·
+  <a href="https://volentify.vercel.app/api/docs">API</a>
+</p>
 
-The full product specification is in [`docs/PRD.md`](docs/PRD.md); the design system is in
-[`docs/DESIGN.md`](docs/DESIGN.md).
+---
 
-## Repository layout
+> **In an emergency, call 112.** Ambulance 108 · Fire 101 · Police 100 · NDMA 1078. Volentify helps responders
+> coordinate; it is not an emergency service and not a government service.
 
-```
-Volentify/
-├── README.md
-├── docs/
-│   ├── PRD.md                    Product requirements (v3.5)
-│   ├── DESIGN.md                 Design system: tokens, type, map language, components
-│   └── design/references/        Earlier Stitch design explorations (reference only)
-├── .github/workflows/            CI, APK build & release, weekly model training
-├── ml/                           Cyclone model pipeline (IBTrACS → features → XGBoost → API)
-├── mesh-android/                 Volentify Mesh: Android BLE store-and-forward relay app
-└── frontend/                     The deployable web app (Vercel root directory)
-    ├── app/                      Next.js 15 App Router
-    │   ├── layout.tsx            Fonts, session, toasts, navigation
-    │   ├── map/                  Full-screen tactical map (no footer)
-    │   └── (site)/               Every other route, grouped by purpose:
-    │       ├── page.tsx          Home
-    │       ├── (operations)/     disasters, disasters/[id], alerts, volunteer, resources, predictions
-    │       ├── (intelligence)/   disaster-intelligence, analytics
-    │       ├── (account)/        login, register, onboarding, auth/callback
-    │       ├── (console)/        dashboard, agency, admin
-    │       └── (about)/          about, research, faqs, news, ngo-partners, government,
-    │                             contact, knowledge, privacy, terms
-    ├── components/
-    │   ├── ui/                   Design-system primitives
-    │   ├── layout/               Navbar, footer
-    │   ├── map/                  Tactical map, detail drawer, God's Eye HUD
-    │   └── …                     Feature components (auth, globe, operations, home)
-    ├── lib/                      API client, session, types, constants, utilities
-    ├── middleware.ts             Role-based route protection (SEC-03)
-    ├── prisma/schema.prisma      Database schema (Neon PostgreSQL)
-    ├── api/                      FastAPI backend (Vercel Python function)
-    │   ├── index.py              App entry point and /api/health
-    │   └── _lib/
-    │       ├── core/             config, database (Neon Postgres + in-memory fallback), security
-    │       ├── engines/          live feeds, dispatch, triage, surge, dedup, briefing, intel, gemini, geo
-    │       ├── routers/          auth, entities, mesh, intelligence
-    │       ├── data/             schema, migrations, setup script, helpline reference
-    │       ├── models/           trained models + model card, written by the ML workflow
-    │       └── schemas.py        Request/response contracts
-    └── tests/                    API acceptance tests (PRD §14)
-```
+Volentify gives citizens, volunteers, NGOs and incident commanders one shared picture of an emergency. It maps
+incidents as they unfold from public hazard feeds, carries field reports phone-to-phone over Bluetooth when the mobile
+network is down, and sends the right volunteer to the right mission first.
 
-## Running locally
+## What you can do
 
-Requirements: Node 20+, Python 3.12+.
-
-```bash
-cd frontend
-npm install
-pip install -r requirements.txt      # add pytest to run the tests
-cp .env.example .env                 # optional — everything works without it
-npm run dev                          # Next.js on :3000 and FastAPI on :8000 together
-```
-
-Open http://localhost:3000. API docs are at http://localhost:3000/api/docs.
-
-There is no sample data anywhere. Incidents come from live public hazard feeds (GDACS, USGS, NASA EONET), official
-warnings from NDMA SACHET, hospitals and shelters from OpenStreetMap, and everything else from real users. Without
-`DATABASE_URL` the live feeds still show, but nothing you create is stored — every screen marks this as "Not saved". In local
-development, NGO and command roles are verified automatically so every console can be explored.
-
-### Connecting a database
-
-The database is Neon PostgreSQL, created from Vercel → Storage (`neon-volentify`) and connected to the project.
-
-1. For local development copy the Neon connection strings into `frontend/.env`: in Vercel open Storage →
-   neon-volentify → `.env.local`, or run `vercel env pull frontend/.env`. Use the pooled string (host contains
-   `-pooler`) as `DATABASE_URL` and the unpooled one as `DIRECT_URL`. `DB_URL`, `POSTGRES_URL` and
-   `DB_POSTGRES_URL` are read too, so the integration works whatever prefix it was connected with.
-2. That's it: on first connection the API creates the schema (`api/_lib/data/schema.sql`, equivalent to
-   `prisma/schema.prisma`), applies migrations (`api/_lib/data/migrations.py`) and pulls the live feeds.
-   `npm run db:seed` does the same from your machine; `npm run db:push` is the Prisma route. No sample rows are
-   inserted — and a database seeded by an earlier version has its demonstration rows removed automatically.
-3. Set `NEXTAUTH_SECRET` and, for your own account, `VOLENTIFY_ADMIN_EMAILS`.
-
-### Google sign-in
-
-Create an OAuth client (Web) in Google Cloud Console, add `{NEXTAUTH_URL}/auth/callback` as an
-authorised redirect URI and set `GOOGLE_CLIENT_ID`. The ID token is verified server-side against
-Google's signing keys, audience, issuer and a one-time nonce.
-
-## Deploying to Vercel
-
-1. Import the repository and set **Root Directory** to `frontend`.
-2. Storage → Create Database → Neon (Postgres), connected to the project. This adds `DATABASE_URL`
-   (or `DB_URL`, depending on the prefix chosen).
-3. Add `NEXTAUTH_SECRET` (any long random string), `NEXTAUTH_URL` (your site address) and
-   `VOLENTIFY_ADMIN_EMAILS`. Optional: `GOOGLE_CLIENT_ID`, `GEMINI_API_KEY` (an AI Studio key `AIza…` or a
-   Vertex AI express key `AQ.…` — both are supported).
-   `/api/health` reports which variables the deployment picked up, and `/api/health?deep=1` makes a live Gemini
-   call to confirm the key works.
-4. Deploy. Next.js pages and the Python API (`api/index.py`, routed by `vercel.json`) deploy together,
-   and the first API request initialises the database.
-
-## What is implemented
-
-| Area | Status |
+| | Live link |
 | :-- | :-- |
-| Mesh ingest & read APIs (FR-05…FR-16) | Bearer-token gateways, 100-event / 4 KB validation, idempotent upsert, node liveness, redaction of sensitive reports for unverified readers, review & promotion to missions. Ingest returns **503** instead of a volatile acknowledgement when the database is down, so phones keep their outbox. |
-| Sperling dispatch | Lexicographic greedy allocation with urgency weights, skill scarcity, adjacency, the 0.12 squander penalty, distance decay and fatigue; specialist missions never fall back to untrained responders. |
-| Laya triage | Three tiers: local `laya` package → hosted Impossibl endpoint → deterministic multilingual lexicon (English, Hindi, Marathi, Bengali, Assamese, Odia, Tamil, Telugu, Malayalam). |
-| Cyclone forecasting | XGBoost models trained on NOAA IBTrACS North Indian Ocean best tracks (1980 onward, IMD winds preferred): 24-hour intensity change and the probability of reaching severe cyclonic storm strength. Evaluated on held-out storms against persistence and climatology; metrics shown on `/predictions`. Served with a dependency-free tree evaluator, so the API stays small. |
-| Storm surge | Calibrated physical estimator (inverse barometer, saturating wind set-up, coastline distance decay) driven by the forecast peak wind — there is no open surge-observation archive for India to train on. |
-| Dedup & briefing | Spatio-temporal clustering (15 km / 2 h) and corroboration analysis; Gemini merges facts and writes the 150-word briefing when `GEMINI_API_KEY` is set. |
-| Auth | Credentials (scrypt) and Google OAuth, signed HTTP-only session, compulsory 5-step onboarding, signed digital muster passes, verification for NGO/command roles. |
-| Live data | Incidents from GDACS (cyclones, floods, droughts, wildfires, volcanoes), USGS (earthquakes M4.5+) and NASA EONET, refreshed every 15 minutes into Neon with an evidence timeline, closed automatically when a source drops them. Official CAP warnings from NDMA SACHET (expired ones removed), hospitals and shelters from OpenStreetMap near active incidents. `/api/live/status` shows when each feed last answered. |
-| Map | MapLibre with CARTO Dark Matter and satellite imagery as a base map (Esri World Imagery, NASA GIBS MODIS/VIIRS daily) under every operational layer, a one-tap Satellite switch, imagery opacity, live precipitation radar, 3D terrain with hillshade, God's Eye orbital HUD, filters, measuring, PNG export. `/map?imagery=esri-imagery` opens straight on imagery. |
+| See every active hazard in and around India on a 2D/3D map with satellite imagery, field reports, missions, hospitals and shelters | [volentify.vercel.app/map](https://volentify.vercel.app/map) |
+| Read alerts from incident command, automated safety advice for each live incident, and official NDMA SACHET warnings | [/alerts](https://volentify.vercel.app/alerts) |
+| Report an incident from the browser — it is triaged in any major Indian language and reaches responders | [/contact](https://volentify.vercel.app/contact) |
+| Find the nearest hospital or shelter to you or to a specific disaster, plus helplines, guidelines and research | [/resources](https://volentify.vercel.app/resources) |
+| Volunteer: get missions matched to your skills and location, start one and follow the route on the map | [/volunteer](https://volentify.vercel.app/volunteer) |
+| Report and relay with **no signal** using the Volentify Mesh Android app | [/mesh](https://volentify.vercel.app/mesh) · [download APK](https://github.com/Gyanvir/Volentify/releases/latest/download/volentify-mesh.apk) |
+| See the response in numbers: live operations, volunteer impact and past disasters | [/analytics](https://volentify.vercel.app/analytics) |
+| Check how Volentify is accountable: figures, data held, how decisions are made | [/transparency](https://volentify.vercel.app/transparency) |
+| Prepare your household for cyclones, floods, earthquakes and heatwaves | [/knowledge](https://volentify.vercel.app/knowledge) |
 
-## Volentify Mesh (Android)
+## Who it is for
 
-`mesh-android/` is the offline companion app: Kotlin, Jetpack Compose, Room and WorkManager.
+- **Citizens** — follow alerts for your area, report what you see, find help nearby.
+- **Volunteers** — list your skills and equipment, accept recommended missions, build a public profile with your
+  mission history and reviews from other members.
+- **NGOs and relief agencies** — create missions, see the full field picture, review reports. Accounts are verified
+  before they get these permissions.
+- **Incident command (NDRF, SDRF, district EOCs)** — broadcast official alerts, review and convert field reports, run
+  dispatch, and read situation briefings. Accounts are verified before they get these permissions.
 
-- Every phone advertises and scans for the Volentify BLE service and acts as both GATT server and
-  client. Envelopes are framed to fit any MTU, validated, deduplicated by `eventId`, stored with
-  `hopCount + 1` / `ttl − 1` and relayed onward while `ttl > 0`.
-- Reports live in SQLite, so they survive the app closing and the phone restarting. Each shows
-  Saved locally → Relayed → Syncing → Server-confirmed (or Failed).
-- Any phone with internet uploads its outbox to `/api/mesh/ingest` in batches of 100 using a
-  gateway token from the web dashboard, retrying with exponential backoff until acknowledged.
-- Node IDs are random UUIDs, never hardware addresses; locations can be masked by ±500 m.
+Sign up at [volentify.vercel.app/register](https://volentify.vercel.app/register). Agencies and NGOs that want their
+teams verified, write to the address below.
 
-The **Volentify Mesh APK** workflow builds and tests the app and publishes `volentify-mesh.apk`
-as a GitHub release. The website's `/mesh` page offers it for download from the site's own domain
-(`/download/android` streams the latest release with the Android package MIME type). To build locally, open
-`mesh-android/` in Android Studio.
+## Volentify Mesh — reporting without a network
 
-## ML pipeline
+Install the [APK](https://github.com/Gyanvir/Volentify/releases/latest/download/volentify-mesh.apk) on an Android phone
+(Android 8 or later with Bluetooth LE) and leave the relay switched on. A report is saved on the phone, handed to nearby
+phones over Bluetooth (roughly 30–50 m, up to five hops), and uploaded by the first phone that gets mobile data or Wi-Fi.
+That phone also brings official messages from incident command back into the offline mesh. Every report shows where it
+is: saved locally → relayed → server-confirmed.
 
-```bash
-cd ml
-pip install -r requirements.txt
-python -m volentify_ml.train --download     # fetch IBTrACS, evaluate, export to frontend/api/_lib/models
-```
+## Rules everyone follows
 
-The **Train cyclone models** workflow runs this weekly and commits the refreshed models.
+The full rules, role-by-role caveats, permissions and security notes are at
+[/safety](https://volentify.vercel.app/safety). In short:
 
-## Research archive
+1. **Call 112 first** if anyone is in danger. The mesh is best-effort.
+2. **Report only what you see.** False alarms are an offence under Section 54 of the Disaster Management Act, 2005.
+3. **Send one report per situation** — repeats crowd the mesh. The app refuses duplicates within a minute.
+4. **Field reports are unverified** until command reviews them. Only messages marked *Official · Volentify command*
+   come from verified command; *Automated* advisories are guidance, not warnings.
+5. **Keep identities out.** No Aadhaar, PAN, bank or phone numbers in reports — they are removed automatically.
+6. **Don't take risks to file a report.** Never enter flood water, damaged buildings or closed zones.
 
-Live observations and model outputs are archived to the `research_log` table (created automatically) so results
-can be reproduced and analysed:
+## Where the data comes from
 
-| Kind | What is recorded | When |
-| :-- | :-- | :-- |
-| `cap_alert` | Each NDMA SACHET CAP alert (title, text, severity, issuer, time), stored once | Every feed pull, plus every 3 h |
-| `forecast` | Input and full output of every `/api/predict` call, with model version | On every forecast |
-| `dispatch_run` | Tier counts, completeness, latency, scarcity weights, score distribution | On every dispatch cycle |
-| `model_version` | The model card (data span, features, held-out metrics) of each trained model | Once per version |
-| `platform_snapshot` | Active incidents, task and volunteer status counts, mesh node and hop counts | Every 3 h |
+| Data | Source |
+| :-- | :-- |
+| Cyclones, floods, droughts, wildfires, volcanoes | [GDACS](https://www.gdacs.org) (EC Joint Research Centre & UN OCHA) |
+| Earthquakes (M4.5+) | [USGS Earthquake Hazards Program](https://earthquake.usgs.gov) |
+| Other natural events | [NASA EONET](https://eonet.gsfc.nasa.gov) |
+| Official warnings (CAP) | [NDMA SACHET](https://sachet.ndma.gov.in) |
+| Hospitals and shelters | [OpenStreetMap](https://www.openstreetmap.org) contributors |
+| Satellite imagery and radar | NASA GIBS, Esri World Imagery, RainViewer |
+| Field reports, missions, volunteers | People using Volentify |
 
-No personal data is archived (no report text, names, phone numbers or exact volunteer locations).
-The **Collect research archive** workflow triggers `/api/research/collect` every 3 hours.
-`GET /api/research/summary` shows what has been collected; `GET /api/research/export?kind=…&format=csv|jsonl`
-downloads it (incident administrators and researchers).
+Live feeds refresh every 15 minutes. Nothing on the platform is sample or invented data.
 
-Model training history is also kept in git: each weekly retrain commits the refreshed model and model card.
+## Privacy
 
-## Tests
+Volentify collects only what a response needs. People-related reports are shown in full only to verified command and
+NGO accounts; volunteer profiles never show contact details; report free text and exact coordinates are minimised 30
+days after an incident closes; no data is sold or used for advertising. Read the
+[privacy notice](https://volentify.vercel.app/privacy).
 
-```bash
-cd frontend
-npm test          # API acceptance tests
-cd ../ml && python -m pytest tests -q   # pipeline tests, incl. tree-evaluator parity with XGBoost
-npm run typecheck
-```
+## For developers
+
+Volentify is open source (MIT). Setup, architecture, deployment, the ML pipeline and tests are in
+[`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md); the product specification is in [`docs/PRD.md`](docs/PRD.md) and the
+design system in [`docs/DESIGN.md`](docs/DESIGN.md). The public REST API is documented at
+[volentify.vercel.app/api/docs](https://volentify.vercel.app/api/docs).
+
+## Contact
+
+Questions, partnerships, data requests or a security problem: **[gyanvirsingh09@gmail.com](mailto:gyanvirsingh09@gmail.com)**.
 
 ## Licence
 
-MIT
+[MIT](https://opensource.org/license/mit)

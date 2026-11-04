@@ -51,7 +51,9 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 import org.volentify.mesh.data.EventType
+import org.volentify.mesh.data.PiiGuard
 import org.volentify.mesh.data.Priority
+import org.volentify.mesh.data.Rules
 import org.volentify.mesh.location.Fix
 import org.volentify.mesh.location.LocationProvider
 import org.volentify.mesh.location.LocationStatus
@@ -77,6 +79,10 @@ fun ReportScreen(vm: MeshViewModel, onClose: () -> Unit, onRequestLocation: () -
     var incident by remember { mutableStateOf(incidents.firstOrNull()?.id) }
     var saving by remember { mutableStateOf(false) }
     var waitingForGps by remember { mutableStateOf(false) }
+    /** Why the last save was refused (duplicate SOS or hourly cap); the form stays filled in. */
+    var refusal by remember { mutableStateOf<String?>(null) }
+    val needsPii = remember(needs) { PiiGuard.scan(needs) }
+    val notesPii = remember(notes) { PiiGuard.scan(notes) }
 
     // ─── Location: start as soon as the screen opens so the fix is ready by the time the form is filled ───
     val context = LocalContext.current
@@ -123,6 +129,13 @@ fun ReportScreen(vm: MeshViewModel, onClose: () -> Unit, onRequestLocation: () -
             TextButton(onClick = onClose) { Text("Cancel", color = Palette.Sand) }
         }
         Text("Saved on this phone first. Works with no signal.", style = MaterialTheme.typography.bodySmall)
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                "In danger now? The mesh can take minutes to hours to reach responders.",
+                style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f),
+            )
+            TextButton(onClick = { dial(context, "112") }) { Text("Call 112", color = Palette.Critical) }
+        }
 
         LocationRow(
             status = locStatus, fix = fix, acquiring = acquiring, masked = vm.settings.maskLocation,
@@ -138,21 +151,35 @@ fun ReportScreen(vm: MeshViewModel, onClose: () -> Unit, onRequestLocation: () -
 
         Label("What is happening")
         FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            EventType.entries.forEach { t -> Chip(t.label, t == type, Palette.Signal) { type = t } }
+            EventType.entries.forEach { t ->
+                Chip(t.label, t == type, Palette.Signal) {
+                    type = t
+                    priority = Rules.capPriority(t, priority)
+                }
+            }
         }
 
         Label("Priority")
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Priority.entries.reversed().forEach { p ->
+            Rules.allowedPriorities(type).reversed().forEach { p ->
                 Chip(p.name.lowercase().replaceFirstChar { it.uppercase() }, p == priority, priorityColor(p)) { priority = p }
             }
+        }
+        if (type !in Rules.CRITICAL_TYPES) {
+            Text(
+                "Critical is kept for people trapped or missing, medical emergencies, fire and flooding.",
+                style = MaterialTheme.typography.bodySmall,
+            )
         }
 
         if (type in PEOPLE_TYPES) {
             Field("Number of people", count, KeyboardType.Number) { v -> count = v.filter { it.isDigit() }.take(4) }
         }
-        Field("Needs (boats, insulin, water…)", needs) { needs = it.take(200) }
-        Field("Notes", notes, minLines = 3) { notes = it.take(1000) }
+        Field("Needs (boats, insulin, water…)", needs, hint = piiHint(needsPii), warn = needsPii.isNotEmpty()) { needs = it.take(200) }
+        Field(
+            "Notes", notes, minLines = 3, warn = notesPii.isNotEmpty(),
+            hint = piiHint(notesPii) ?: "Only what you see yourself. No ID, bank or phone numbers, or other people's full names.",
+        ) { notes = it.take(1000) }
 
         if (incidents.isNotEmpty()) {
             Label("Incident")
@@ -162,9 +189,11 @@ fun ReportScreen(vm: MeshViewModel, onClose: () -> Unit, onRequestLocation: () -
             }
         }
 
+        refusal?.let { Text(it, color = Palette.High, fontSize = 14.sp) }
         Button(
             onClick = {
                 saving = true
+                refusal = null
                 val details = buildMap<String, Any> {
                     count.toIntOrNull()?.let { put("count", it) }
                     if (needs.isNotBlank()) put("needs", needs.split(',').map { it.trim() }.filter { it.isNotEmpty() })
@@ -178,7 +207,13 @@ fun ReportScreen(vm: MeshViewModel, onClose: () -> Unit, onRequestLocation: () -
                         waitingForGps = false
                     }
                     val finalFix = fix ?: LocationProvider.lastKnown(context)
-                    vm.createReport(type, priority, details, incident, finalFix) { onClose() }
+                    vm.createReport(
+                        type, priority, details, incident, finalFix,
+                        onRefused = { reason ->
+                            refusal = reason
+                            saving = false
+                        },
+                    ) { onClose() }
                 }
             },
             enabled = !saving,
@@ -242,10 +277,21 @@ private fun Chip(text: String, selected: Boolean, color: Color, onClick: () -> U
     )
 }
 
+/** Live warning while typing; the numbers themselves are removed when the report is saved. */
+private fun piiHint(found: Set<PiiGuard.Kind>): String? =
+    if (found.isEmpty()) null
+    else PiiGuard.describe(found).replaceFirstChar { it.uppercase() } + " found — it will be removed when you save"
+
 @Composable
-private fun Field(label: String, value: String, keyboard: KeyboardType = KeyboardType.Text, minLines: Int = 1, onChange: (String) -> Unit) {
+private fun Field(
+    label: String, value: String, keyboard: KeyboardType = KeyboardType.Text, minLines: Int = 1,
+    hint: String? = null, warn: Boolean = false, onChange: (String) -> Unit,
+) {
     OutlinedTextField(
         value = value, onValueChange = onChange, label = { Text(label) }, minLines = minLines,
+        supportingText = if (hint != null) {
+            @Composable { Text(hint, color = if (warn) Palette.High else Palette.Stone) }
+        } else null,
         keyboardOptions = KeyboardOptions(keyboardType = keyboard),
         modifier = Modifier.fillMaxWidth(),
         colors = OutlinedTextFieldDefaults.colors(

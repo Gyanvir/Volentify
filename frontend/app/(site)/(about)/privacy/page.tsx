@@ -31,7 +31,9 @@ export default function PrivacyPage() {
           <p>
             Reports submitted on the website or through Volentify Mesh contain the report text or type, a priority, the time it
             was observed and, where available, GPS coordinates. Reports are processed automatically to classify them and link
-            them to an active incident.
+            them to an active incident. Before anything is stored or relayed, <strong>Aadhaar, PAN, bank or card and phone
+            numbers are removed from free text</strong> — reports pass through other people&apos;s phones, so they must never
+            carry identity documents.
           </p>
           <p>
             Reports about trapped, missing, injured or rescued people are <strong>visible in full only to verified
@@ -50,11 +52,19 @@ export default function PrivacyPage() {
           </ul>
 
           <h2>How long we keep data</h2>
+          <ul>
+            <li><strong>Field reports:</strong> 30 days after a report was observed — once its incident is closed, or straight away if it was never linked to one — its free text and sender name are deleted and its coordinates are rounded to about 1 km. The type, priority, time and counts stay, so the response can still be reviewed and analysed.</li>
+            <li><strong>Missions, alerts and evidence</strong> are kept as the record of the response.</li>
+            <li><strong>The audit log</strong> of privileged actions (sign-ins to command accounts, role changes, alerts, mission and review decisions) is kept for at least 180 days, as the CERT-In directions of April 2022 require, and is hash-chained so it cannot be quietly edited.</li>
+            <li><strong>Account details</strong> are kept while your account is active. You can ask us to delete your account; we will remove your profile and onboarding details and keep only the minimum needed to preserve the integrity of the audit record.</li>
+          </ul>
+          <p>This follows the data-minimisation principle of the Digital Personal Data Protection Act, 2023: personal data processed to respond to a disaster is not kept, in identifiable form, longer than the response needs.</p>
+
+          <h2>Volunteer profiles and reviews</h2>
           <p>
-            Reports, evidence, missions and alerts received by the platform are kept <strong>permanently as an audit record</strong>,
-            so that decisions made during an emergency can be reviewed afterwards. Account details are kept while your account is
-            active. You can ask us to delete your account; we will remove your profile and onboarding details and keep only the
-            minimum needed to preserve the integrity of the audit record.
+            Volunteer profiles are public so that people can trust who is coming to help: name, skills, district, missions
+            completed, hours and reviews. Phone numbers, email, blood group and exact location are never shown on a profile.
+            Reviews show the reviewer&apos;s name and role; phone and ID numbers are removed from review text.
           </p>
 
           <h2>Cookies and sign-in</h2>
@@ -82,8 +92,9 @@ export default function PrivacyPage() {
 
           <h2>Contact</h2>
           <p>
-            For privacy questions or requests, use the <Link href="/contact">contact page</Link> or open an issue on the{' '}
-            <a href="https://github.com/thehimanshubansal/Volentify">project repository</a>. In an emergency, call 112.
+            For privacy questions or requests, write to <a href="mailto:gyanvirsingh09@gmail.com">gyanvirsingh09@gmail.com</a>,
+            use the <Link href="/contact">contact page</Link> or open an issue on the{' '}
+            <a href="https://github.com/Gyanvir/Volentify">project repository</a>. In an emergency, call 112.
           </p>
         </Prose>
       </div>

@@ -30,12 +30,14 @@ export function MeshReviewQueue({ disasters, onPromoted }: { disasters: Disaster
   const unreviewed = (events.data ?? []).filter((e) => e.review_status === 'UNREVIEWED').length;
   const name = (id: string | null) => disasters.find((d) => d.id === id)?.title ?? 'Not linked to an incident';
 
-  const decide = async (e: MeshEvent, action: 'REVIEWED' | 'PROMOTE') => {
+  const decide = async (e: MeshEvent, action: 'REVIEWED' | 'PROMOTE' | 'REJECT', blockNode = false) => {
+    if (blockNode && !window.confirm('Quarantine this phone? Every future report or message it sends will be dropped. Use only for deliberate false or abusive reports.')) return;
     setBusy(e.event_id);
     try {
-      const updated = await api.patch<MeshEvent>(`/api/mesh/events/${e.event_id}`, { action });
+      const updated = await api.patch<MeshEvent>(`/api/mesh/events/${e.event_id}`, { action, block_node: blockNode });
       events.mutate((list) => list?.map((x) => (x.event_id === e.event_id ? updated : x)));
       if (action === 'PROMOTE') { toast('Report promoted to an open mission'); onPromoted(); }
+      else if (action === 'REJECT') toast(blockNode ? 'Report rejected and the phone quarantined' : 'Report rejected as false — hidden from public views');
       else toast('Report marked reviewed');
     } catch (err) {
       toast(err instanceof ApiError ? err.message : 'Could not update the report.', 'error');
@@ -71,7 +73,7 @@ export function MeshReviewQueue({ disasters, onPromoted }: { disasters: Disaster
       {events.loading && !events.data ? <LoadingRows rows={4} />
         : events.error ? <ErrorState message={events.error.message} onRetry={events.reload} />
         : rows.length === 0 ? <EmptyState title={review === 'UNREVIEWED' ? 'Review queue is clear' : 'No reports match these filters'}
-            body="New mesh reports appear here within 30 seconds of a gateway syncing." />
+            body="New mesh and website reports appear here within 30 seconds of a gateway syncing." />
         : (
           <ul className="space-y-3">
             {rows.map((e) => {
@@ -84,8 +86,8 @@ export function MeshReviewQueue({ disasters, onPromoted }: { disasters: Disaster
                         <span className="inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-xs ring-1 ring-inset ring-line-strong" style={{ color: MESH_PRIORITY_HEX[e.priority] }}>
                           <span className="h-1.5 w-1.5 rounded-full bg-current" aria-hidden />{titleCase(e.priority)}
                         </span>
-                        <Pill tone={e.review_status === 'UNREVIEWED' ? 'warn' : e.review_status === 'PROMOTED' ? 'gold' : 'good'}>
-                          {e.review_status === 'UNREVIEWED' ? 'Unverified' : titleCase(e.review_status)}
+                        <Pill tone={e.review_status === 'UNREVIEWED' ? 'warn' : e.review_status === 'PROMOTED' ? 'gold' : e.review_status === 'REJECTED' ? 'bad' : 'good'}>
+                          {e.review_status === 'UNREVIEWED' ? 'Unverified' : e.review_status === 'REJECTED' ? 'Rejected as false' : titleCase(e.review_status)}
                         </Pill>
                         <span className="text-xs text-stone">observed {timeAgo(e.observed_at)} · {e.hop_count} hop{e.hop_count === 1 ? '' : 's'}</span>
                       </div>
@@ -96,8 +98,8 @@ export function MeshReviewQueue({ disasters, onPromoted }: { disasters: Disaster
                         <p className="text-sm text-sand">{payload.map(([k, v]) => `${titleCase(k)}: ${Array.isArray(v) ? v.join(', ') : String(v)}`).join(' · ')}</p>
                       )}
                     </div>
-                    {e.review_status !== 'PROMOTED' && (
-                      <div className="flex shrink-0 gap-2">
+                    {e.review_status !== 'PROMOTED' && e.review_status !== 'REJECTED' && (
+                      <div className="flex shrink-0 flex-wrap gap-2">
                         {e.review_status === 'UNREVIEWED' && (
                           <Button size="sm" variant="secondary" disabled={busy === e.event_id} onClick={() => decide(e, 'REVIEWED')}>Mark reviewed</Button>
                         )}
@@ -105,6 +107,10 @@ export function MeshReviewQueue({ disasters, onPromoted }: { disasters: Disaster
                           title={e.disaster_id ? undefined : 'Only reports linked to an incident can become missions'}>
                           Promote to mission
                         </Button>
+                        <Button size="sm" variant="ghost" disabled={busy === e.event_id} onClick={() => decide(e, 'REJECT')}
+                          title="False, duplicate-spam or prank report: hide it from public views">Reject</Button>
+                        <Button size="sm" variant="ghost" className="text-critical" disabled={busy === e.event_id} onClick={() => decide(e, 'REJECT', true)}
+                          title="Reject and quarantine the phone that sent it">Reject & quarantine phone</Button>
                       </div>
                     )}
                   </div>

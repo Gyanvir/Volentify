@@ -142,7 +142,8 @@ def _incident(source: str, external_id: str, **fields: Any) -> dict[str, Any]:
 
 # ─── GDACS ──────────────────────────────────────────────────────────────────
 
-def parse_gdacs(body: dict, now: datetime) -> list[dict]:
+def parse_gdacs(body: dict, now: datetime, archive: bool = False) -> list[dict]:
+    """GDACS events in the region. `archive=True` keeps past events too (used for the history view)."""
     out = []
     for feature in body.get("features") or []:
         p = feature.get("properties") or {}
@@ -159,7 +160,7 @@ def parse_gdacs(body: dict, now: datetime) -> list[dict]:
         updated = _parse_time(p.get("datemodified")) or _parse_time(p.get("todate")) or started
         ended = _parse_time(p.get("todate")) or updated
         current = str(p.get("iscurrent")).lower() == "true"
-        if not current and now - ended > timedelta(days=FRESH_DAYS.get(category, 7)):
+        if not archive and not current and now - ended > timedelta(days=FRESH_DAYS.get(category, 7)):
             continue
         sev_data = p.get("severitydata") or {}
         level = str(p.get("episodealertlevel") or p.get("alertlevel") or "Green").title()

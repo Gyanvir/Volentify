@@ -1,5 +1,6 @@
 package org.volentify.mesh.data
 
+import androidx.room.ColumnInfo
 import androidx.room.Entity
 import androidx.room.Index
 import androidx.room.PrimaryKey
@@ -57,4 +58,10 @@ data class MeshEvent(
     val serverAckId: String? = null,
     val confirmedAt: Long? = null,
     val failureReason: String? = null,
+    /**
+     * True only for events fetched from the server downlink (GET /api/mesh/downlink). Together with
+     * SERVER_CONFIRMED it is the sole source of the "Official · Volentify command" label: a peer relaying an
+     * envelope over Bluetooth can claim anything, so phones never trust each other's claims. Added in DB v2.
+     */
+    @ColumnInfo(defaultValue = "0") val fromServer: Boolean = false,
 )

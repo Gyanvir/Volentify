@@ -2,13 +2,13 @@
 
 import Link from 'next/link';
 import { useMemo, useState } from 'react';
-import { MapPin, Megaphone } from 'lucide-react';
+import { ExternalLink, MapPin, Megaphone } from 'lucide-react';
 import { useApi } from '@/lib/api';
 import { SEVERITY_META } from '@/lib/constants';
 import { useSession } from '@/lib/session';
 import type { Alert, Severity } from '@/lib/types';
 import { cn, formatDateTime, SEVERITY_ORDER, timeAgo } from '@/lib/utils';
-import { SeverityBadge } from '@/components/ui/Badge';
+import { Pill, SeverityBadge } from '@/components/ui/Badge';
 import { ButtonLink } from '@/components/ui/Button';
 import { EmptyState, ErrorState, LoadingRows, SourceTag } from '@/components/ui/DataState';
 import { PageHeader, Section } from '@/components/ui/Page';
@@ -21,8 +21,11 @@ export default function AlertsBoard() {
   const official = useOfficialWarnings(60);
   const [category, setCategory] = useState('');
   const [level, setLevel] = useState<Severity | ''>('');
+  const [kind, setKind] = useState<'' | 'BROADCAST' | 'AUTO'>('');
 
-  const all = useMemo(() => data ?? [], [data]);
+  const everything = useMemo(() => data ?? [], [data]);
+  const all = useMemo(() => everything.filter((a) => !kind || (a.kind ?? 'BROADCAST') === kind), [everything, kind]);
+  const broadcasts = everything.filter((a) => (a.kind ?? 'BROADCAST') === 'BROADCAST').length;
   const categories = useMemo(() => Array.from(new Set(all.map((a) => a.category))).sort(), [all]);
   const alerts = useMemo(() => all
     .filter((a) => (!category || a.category === category) && (!level || a.level === level))
@@ -41,8 +44,14 @@ export default function AlertsBoard() {
           : <ButtonLink href="tel:112" variant="danger">Call 112</ButtonLink>}
         meta={<SourceTag source={source} />}
       />
-      <Section className="pt-0" title="Volentify advisories" description="Broadcast by verified incident commanders on this platform.">
-        <div className="mb-8 flex flex-col gap-3 border-y border-line py-4 lg:flex-row lg:items-center lg:gap-8">
+      <Section className="pt-0" title="Volentify advisories"
+        description="Alerts broadcast by verified incident commanders on this platform, and automated safety advice for every live incident affecting India. Automated advisories are guidance generated from GDACS, USGS and NASA data — never an official warning.">
+        <div className="mb-8 flex flex-col gap-3 border-y border-line py-4 lg:flex-row lg:flex-wrap lg:items-center lg:gap-x-8">
+          <FilterChips<'' | 'BROADCAST' | 'AUTO'> label="From" value={kind} onChange={setKind} options={[
+            { value: '', label: 'All', count: everything.length },
+            { value: 'BROADCAST', label: 'Incident command', count: broadcasts },
+            { value: 'AUTO', label: 'Automated', count: everything.length - broadcasts },
+          ]} />
           <FilterChips<Severity | ''> label="Level" value={level} onChange={setLevel} options={[
             { value: '', label: 'All' },
             ...(['CRITICAL', 'HIGH', 'MODERATE', 'LOW'] as const)
@@ -56,7 +65,9 @@ export default function AlertsBoard() {
         {loading && !data ? <LoadingRows rows={4} />
           : error ? <ErrorState message={error.message} onRetry={reload} />
           : all.length === 0 ? (
-            <EmptyState title="No advisories broadcast" body="Incident command has not issued a Volentify advisory. Check the official warnings below." />
+            <EmptyState title={kind === 'BROADCAST' ? 'No command broadcasts in force' : 'No advisories right now'}
+              body={kind === 'BROADCAST' ? 'Incident command has not broadcast an alert. Automated advisories and official warnings are still listed.'
+                : 'No live incident is affecting India at the moment, and command has not broadcast an alert. Check the official warnings below.'} />
           ) : alerts.length === 0 ? (
             <EmptyState title="No alerts match these filters" body="There are no advisories at this level or for this hazard right now." />
           ) : (
@@ -67,6 +78,7 @@ export default function AlertsBoard() {
                   <div className="space-y-3">
                     <div className="flex flex-wrap items-center gap-2.5">
                       <SeverityBadge level={a.level} />
+                      {a.kind === 'AUTO' ? <Pill>Automated · {a.source ?? 'live feed'}</Pill> : <Pill tone="gold">Volentify command</Pill>}
                       <span className="text-[0.8125rem] text-sand">{a.category}</span>
                       <time className="text-xs text-stone" dateTime={a.created_at} title={formatDateTime(a.created_at)}>{timeAgo(a.created_at)}</time>
                     </div>
@@ -76,11 +88,12 @@ export default function AlertsBoard() {
                     <div className="flex items-center gap-4 pt-1 text-xs">
                       <span className="code">{a.code}</span>
                       {a.disaster_id && <Link href={`/disasters/${a.disaster_id}`} className="link text-[0.8125rem]">Incident dossier</Link>}
+                      {a.source_url && <a href={a.source_url} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-[0.8125rem] text-stone hover:text-ivory">Source <ExternalLink className="h-3 w-3" aria-hidden /></a>}
                     </div>
                   </div>
                   <div className={cn('flex flex-col justify-center rounded-xl p-5 sm:p-6',
                     a.level === 'CRITICAL' ? 'bg-critical/[0.07]' : 'bg-ivory/[0.03]')}>
-                    <p className={cn('mb-2 text-[0.8125rem] font-medium', SEVERITY_META[a.level].text)}>What to do</p>
+                    <p className={cn('mb-2 text-[0.8125rem] font-medium', SEVERITY_META[a.level].text)}>{a.kind === 'AUTO' ? 'What to do (general guidance)' : 'What to do'}</p>
                     <p className="font-serif text-[1.5rem] leading-snug text-ivory sm:text-[1.65rem]">{a.advisory}</p>
                   </div>
                 </li>

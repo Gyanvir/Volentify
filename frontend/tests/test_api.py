@@ -56,6 +56,14 @@ def signup(client, email, role="VOLUNTEER", skills=("Boat Rescue",)):
     return r.json()["user"]
 
 
+def command(client, email="chief@ndrf.gov.in", role="INCIDENT_ADMIN"):
+    """A verified command account: sign up, have an administrator verify it, sign in again for fresh claims."""
+    user = signup(client, email, role=role)
+    db.MEMORY.update_user(user["id"], {"role": role, "is_verified": True})
+    assert client.post("/api/auth/login", json={"email": email, "password": "s3cure-pass!"}).status_code == 200
+    return user
+
+
 def mesh_event(**over):
     base = {"event_id": str(uuid.uuid4()), "origin_node_id": str(uuid.uuid4()), "disaster_id": "dis_remal_puri",
             "type": "PERSON_TRAPPED", "priority": "CRITICAL", "payload": {"count": 4},
@@ -124,8 +132,18 @@ def test_rbac_blocks_citizen_broadcast(client):
     assert r.status_code == 403
 
 
-def test_admin_allowlist_can_broadcast(client):
-    signup(client, "chief@ndrf.gov.in", role="INCIDENT_ADMIN")
+def test_allowlisted_email_is_not_elevated_by_password_signup(client):
+    """Credential sign-up doesn't prove email ownership, so VOLENTIFY_ADMIN_EMAILS only elevates Google sign-ins."""
+    user = signup(client, "chief@ndrf.gov.in", role="INCIDENT_ADMIN")
+    assert user["role"] == "INCIDENT_ADMIN" and user["is_verified"] is False
+    r = client.post("/api/alerts", json={"title": "Evacuate now", "category": "Cyclone", "level": "CRITICAL",
+                                         "location": "Puri", "state": "Odisha", "description": "Surge expected",
+                                         "advisory": "Move to shelters"})
+    assert r.status_code == 403
+
+
+def test_verified_command_can_broadcast(client):
+    command(client)
     r = client.post("/api/alerts", json={"title": "Evacuate now", "category": "Cyclone", "level": "CRITICAL",
                                          "location": "Puri", "state": "Odisha", "description": "Surge expected",
                                          "advisory": "Move to shelters"})
@@ -215,7 +233,7 @@ def test_events_filters_and_nodes(client):
 
 
 def test_admin_promotes_mesh_report(client):
-    signup(client, "chief@ndrf.gov.in", role="INCIDENT_ADMIN")
+    command(client)
     event_id = "d4a1b8c2-3e5f-4a7b-9c1d-2e4f6a8b0c2e"
     r = client.patch(f"/api/mesh/events/{event_id}", json={"action": "PROMOTE"})
     assert r.status_code == 200 and r.json()["review_status"] == "PROMOTED"
@@ -535,3 +553,258 @@ def test_first_request_on_fresh_serverless_vm_pulls_feeds(monkeypatch):
     monkeypatch.setattr(live, "fetch_all", lambda now=None: (rows, {s: "ok" for s in live.SOURCES}))
     assert live.ensure_fresh()["refreshed"] is True
     assert live.ensure_fresh()["reason"] == "fresh"
+
+
+# ─── November 2026: regulators, rules, missions, profiles, accountability ───
+
+from api._lib.core import audit as audit_mod  # noqa: E402
+from api._lib.core.security import hash_password  # noqa: E402
+from api._lib.data.regulators import REGULATORS  # noqa: E402
+from api._lib.engines import rules  # noqa: E402
+
+
+def regulator_login(client, index=0, password="regulator-test-pass"):
+    reg = REGULATORS[index]
+    db.MEMORY.update_user(reg["id"], {"password_hash": hash_password(password)})
+    r = client.post("/api/auth/login", json={"email": reg["email"], "password": password})
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+def test_regulator_accounts_are_provisioned_and_protected(client):
+    emails = {r["email"] for r in REGULATORS}
+    assert emails == {"gurpreet@volentify.com", "gyanvir@volentify.com", "himanshu@volentify.com",
+                      "rajveer@volentify.com"}
+    schema = (Path(__file__).resolve().parents[1] / "api/_lib/data/schema.sql").read_text()
+    assert all(r["password_hash"] in schema and r["email"] in schema for r in REGULATORS)
+    # The reserved domain can't be registered by anyone else.
+    r = client.post("/api/auth/register", json={"name": "Imposter", "email": "boss@volentify.com", "password": "s3cure-pass!"})
+    assert r.status_code == 403
+    auth_body = regulator_login(client)
+    assert auth_body["user"]["role"] == "INCIDENT_ADMIN" and auth_body["user"]["is_verified"]
+    assert auth_body["requiresOnboarding"] is False
+    assert client.get("/api/admin/users").status_code == 200
+    # Onboarding cannot turn a regulator into something else.
+    r = client.post("/api/auth/onboard", json={"phone": "9876543210", "role": "CITIZEN", "state_district": "Delhi"})
+    assert r.json()["user"]["role"] == "INCIDENT_ADMIN"
+
+
+def test_only_regulators_change_regulators(client):
+    command(client)
+    target = REGULATORS[1]["id"]
+    r = client.patch(f"/api/admin/users/{target}", json={"role": "CITIZEN"})
+    assert r.status_code == 403
+    regulator_login(client, 0)
+    assert client.patch(f"/api/admin/users/{target}", json={"role": "INCIDENT_ADMIN", "is_verified": True}).status_code == 200
+
+
+def test_reonboarding_cannot_self_promote_to_verified_command(client):
+    signup(client, "citizen@example.org", role="CITIZEN")
+    r = client.post("/api/auth/onboard", json={"phone": "9876543210", "role": "INCIDENT_ADMIN", "state_district": "Puri"})
+    assert r.json()["user"]["role"] == "INCIDENT_ADMIN" and r.json()["user"]["is_verified"] is False
+    assert client.post("/api/alerts", json={"title": "Fake alarm", "category": "Flood", "location": "Puri",
+                                            "state": "Odisha", "description": "Nothing real", "advisory": "Panic now"}).status_code == 403
+
+
+def test_password_change(client):
+    signup(client, "pw@example.org")
+    assert client.post("/api/auth/password", json={"current_password": "wrong", "new_password": "another-pass-123"}).status_code == 401
+    assert client.post("/api/auth/password", json={"current_password": "s3cure-pass!", "new_password": "another-pass-123"}).status_code == 204
+    assert client.post("/api/auth/login", json={"email": "pw@example.org", "password": "another-pass-123"}).status_code == 200
+
+
+def test_audit_trail_records_and_detects_tampering(client):
+    regulator_login(client)
+    client.post("/api/alerts", json={"title": "Evacuate now", "category": "Cyclone", "level": "CRITICAL",
+                                     "location": "Puri", "state": "Odisha", "description": "Surge expected",
+                                     "advisory": "Move to shelters"})
+    rows = client.get("/api/admin/audit").json()
+    actions = [r["action"] for r in rows]
+    assert "auth.login" in actions and "alert.broadcast" in actions
+    assert client.get("/api/admin/audit/verify").json()["ok"] is True
+    db.MEMORY.audit[0]["detail"] = {"forged": True}
+    assert client.get("/api/admin/audit/verify").json()["ok"] is False
+
+
+def test_mission_lifecycle_start_location_completion_and_profile(client):
+    user = signup(client, "vol@example.org", skills=("Boat Rescue",))
+    open_task = next(t for t in client.get("/api/tasks?status=OPEN").json() if t["required_skill"] == "Boat Rescue")
+    assert client.patch(f"/api/tasks/{open_task['id']}", json={"status": "IN_PROGRESS"}).status_code == 403
+    r = client.post(f"/api/tasks/{open_task['id']}/accept")
+    assert r.status_code == 200 and r.json()["accepted_at"]
+    r = client.patch(f"/api/tasks/{open_task['id']}", json={"status": "IN_PROGRESS", "lat": 19.9, "lng": 85.9,
+                                                            "location_name": "Puri bus stand"})
+    assert r.status_code == 200 and r.json()["started_at"] and r.json()["start_lat"] == 19.9
+    me = client.get("/api/volunteers/me").json()
+    assert me["availability"] == "BUSY" and me["lat"] == 19.9 and me["location_name"] == "Puri bus stand"
+    r = client.patch(f"/api/tasks/{open_task['id']}", json={"status": "COMPLETED", "people_helped": 6,
+                                                            "outcome_note": "Moved family, call 9876543210"})
+    assert r.status_code == 200 and r.json()["people_helped"] == 6 and "9876543210" not in r.json()["outcome_note"]
+    me = client.get("/api/volunteers/me").json()
+    assert me["availability"] == "AVAILABLE" and me["missions_done"] == 1
+    profile = client.get("/api/volunteers/me/profile").json()
+    assert profile["is_self"] and profile["stats"]["missions_completed"] == 1 and profile["stats"]["people_helped"] == 6
+    assert profile["history"][0]["code"] == open_task["code"] and profile["badge"] == "Field responder"
+    public = client.get(f"/api/volunteers/{me['id']}/profile", cookies={}).json()
+    assert "email" not in json.dumps(public) or user["email"] not in json.dumps(public)
+
+
+def test_volunteer_cannot_hoard_missions(client):
+    signup(client, "hoarder@example.org", skills=("Manual Packing",))
+    open_ids = [t["id"] for t in client.get("/api/tasks?status=OPEN").json()]
+    accepted = [client.post(f"/api/tasks/{tid}/accept").status_code for tid in open_ids[:4]]
+    assert accepted[:3] == [200, 200, 200] and accepted[3] == 409
+
+
+def test_unstarted_missions_return_to_pool(client, monkeypatch):
+    from api._lib.routers import entities as ent
+    signup(client, "ghost@example.org", skills=("Manual Packing",))
+    task_id = client.get("/api/tasks?status=OPEN").json()[0]["id"]
+    client.post(f"/api/tasks/{task_id}/accept")
+    db.MEMORY.tasks[task_id]["accepted_at"] = datetime.now(timezone.utc) - timedelta(minutes=rules.MISSION_START_MINUTES + 5)
+    ent._watchdog["at"] = None
+    assert client.get(f"/api/tasks/{task_id}").json()["status"] == "ASSIGNED"
+    client.get("/api/tasks")
+    assert client.get(f"/api/tasks/{task_id}").json()["status"] == "OPEN"
+    assert any(a["action"] == "task.auto_release" for a in db.MEMORY.audit)
+
+
+def test_recommendations_rank_qualified_nearby_work(client):
+    signup(client, "boat@example.org", skills=("Boat Rescue",))
+    recs = client.get("/api/volunteers/me/recommendations").json()
+    assert recs["located"] and recs["tasks"]
+    top = recs["tasks"][0]
+    assert top["recommended"] and top["qualified"]
+    paramedic = [r for r in recs["tasks"] if r["skill"] == "Paramedic"]
+    assert all(not r["recommended"] for r in paramedic)  # specialist work is never recommended to the untrained
+    assert all("event_id" in r for r in recs["reports"])
+
+
+def test_reviews(client):
+    vol = signup(client, "reviewed@example.org")
+    vol_id = client.get("/api/volunteers/me").json()["id"]
+    assert client.post(f"/api/volunteers/{vol_id}/reviews", json={"rating": 5}).status_code == 400  # self-review
+    client.post("/api/auth/logout")
+    signup(client, "reviewer@example.org", role="CITIZEN")
+    r = client.post(f"/api/volunteers/{vol_id}/reviews", json={"rating": 4, "comment": "Calm and quick. Aadhaar 2345 6789 0123"})
+    assert r.status_code == 201 and "2345" not in r.json()["comment"] and r.json()["author_name"] == "Test User"
+    client.post(f"/api/volunteers/{vol_id}/reviews", json={"rating": 2, "comment": "Changed my mind"})
+    profile = client.get(f"/api/volunteers/{vol_id}/profile").json()
+    assert profile["stats"]["reviews"] == 1 and profile["stats"]["average_rating"] == 2 and profile["can_review"]
+    assert vol["email"] not in json.dumps(profile)
+
+
+def test_automated_advisories_cover_indian_incidents_only(client):
+    alerts = client.get("/api/alerts").json()
+    auto = [a for a in alerts if a["kind"] == "AUTO"]
+    assert auto and all("not an official warning" in a["description"] for a in auto)
+    assert all(a["disaster_id"] for a in auto)
+    db.MEMORY.reset()
+    assert client.get("/api/alerts").json() == []
+
+
+def test_ingest_enforces_rules_and_quarantine(client):
+    spoof = mesh_event(type="RESOURCE_REQUEST", priority="CRITICAL",
+                       payload={"notes": "Need rice, call +91 98765 43210", "official": True, "from": "Volentify Command"})
+    r = client.post("/api/mesh/ingest", json={"gateway_node_id": str(uuid.uuid4()), "events": [spoof]})
+    assert r.status_code == 200
+    stored = db.MEMORY.get_mesh_event(spoof["event_id"])
+    assert stored["priority"] == "HIGH" and "official" not in stored["payload"]
+    assert stored["payload"]["from"] == "Field team"  # "Command" alone is fine, but see below
+    assert "98765" not in stored["payload"]["notes"]
+    command(client)
+    r = client.patch(f"/api/mesh/events/{spoof['event_id']}", json={"action": "REJECT", "block_node": True})
+    assert r.status_code == 200 and r.json()["review_status"] == "REJECTED"
+    again = mesh_event(origin_node_id=spoof["origin_node_id"])
+    r = client.post("/api/mesh/ingest", json={"gateway_node_id": str(uuid.uuid4()), "events": [again]}).json()
+    assert r["accepted_count"] == 0 and r["blocked_count"] == 1
+    client.post("/api/auth/logout")
+    assert all(e["event_id"] != spoof["event_id"] for e in client.get("/api/mesh/events?limit=500").json())
+
+
+def test_volunteers_cannot_reject_reports(client):
+    signup(client, "v2@example.org")
+    event_id = "d4a1b8c2-3e5f-4a7b-9c1d-2e4f6a8b0c2e"
+    assert client.patch(f"/api/mesh/events/{event_id}", json={"action": "REJECT"}).status_code == 403
+
+
+def test_web_broadcast_and_phone_downlink(client):
+    assert client.post("/api/mesh/broadcast", json={"message": "Hello field"}).status_code == 401
+    signup(client, "radio@example.org")
+    r = client.post("/api/mesh/broadcast", json={"message": "Boat team at the school", "priority": "CRITICAL"})
+    assert r.status_code == 403  # urgent broadcasts are command-only
+    r = client.post("/api/mesh/broadcast", json={"message": "Boat team at the school"})
+    assert r.status_code == 201 and r.json()["payload"]["official"] is False and r.json()["payload"]["role"] == "VOLUNTEER"
+    client.post("/api/auth/logout")
+    command(client)
+    client.post("/api/alerts", json={"title": "Evacuate Puri coast", "category": "Cyclone", "level": "CRITICAL",
+                                     "location": "Puri", "state": "Odisha", "description": "Surge expected",
+                                     "advisory": "Move to cyclone shelters now", "disaster_id": "dis_remal_puri"})
+    client.post("/api/auth/logout")
+    nearby = mesh_event(type="FLOOD", priority="HIGH", payload={"notes": "Road under water"}, lat=19.82, lng=85.84)
+    client.post("/api/mesh/ingest", json={"gateway_node_id": str(uuid.uuid4()), "events": [nearby]})
+    body = client.get("/api/mesh/downlink?lat=19.8&lng=85.8").json()
+    official = [e for e in body["events"] if e["payload"].get("official") is True]
+    assert official and official[0]["payload"]["from"] == "Volentify incident command"
+    assert any(e["payload"].get("message") == "Boat team at the school" for e in body["events"])
+    assert any(e["event_id"] == nearby["event_id"] for e in body["events"])
+    assert all(e["ttl"] <= 3 and len(e["event_id"]) == 36 and len(e["origin_node_id"]) == 36 for e in body["events"])
+    trapped = [e for e in body["events"] if e["type"] == "PERSON_TRAPPED"]
+    assert all(e["payload"].get("redacted") for e in trapped)
+    far = client.get("/api/mesh/downlink?lat=28.6&lng=77.2").json()
+    assert all(e["event_id"] != nearby["event_id"] for e in far["events"])
+    assert body["incidents"] and body["server_time"]
+
+
+def test_citizen_report_outside_incidents_still_reaches_responders(client):
+    r = client.post("/api/reports", json={"text": "Tree fallen on the road, two people injured, Aadhaar 2345 6789 0123",
+                                          "location": "Koramangala, Bengaluru", "lat": 12.93, "lng": 77.62})
+    body = r.json()
+    assert r.status_code == 201 and body["stored"] and body["linked_disaster_id"] is None
+    assert "Aadhaar number" in body["removed"]
+    events = [e for e in db.MEMORY.mesh_events.values() if (e["payload"] or {}).get("source") == "web"]
+    assert events and "2345" not in events[0]["payload"]["notes"] and events[0]["review_status"] == "UNREVIEWED"
+
+
+def test_transparency_and_history(client):
+    signup(client, "t@example.org", skills=("Boat Rescue",))
+    report = client.get("/api/transparency").json()
+    assert report["missions"]["total"] >= 1 and report["incidents"]["active"] >= 1
+    assert report["governance"]["report_retention_days"] == rules.RETENTION_DAYS
+    assert len(report["months"]) == 12 and len(report["mesh"]["monthly"]) == 12
+    assert "email" not in json.dumps(report)
+    db.MEMORY.disasters["dis_remal_puri"]["status"] = "CLOSED"
+    hist = client.get("/api/analytics/history").json()
+    assert any(i["id"] == "dis_remal_puri" and i["status"] == "CLOSED" for i in hist["items"])
+
+
+def test_public_volunteer_positions_are_coarse(client):
+    rows = client.get("/api/volunteers").json()
+    assert rows and all(round(v["lat"], 2) == v["lat"] for v in rows)
+
+
+def test_pii_scrubber():
+    clean, removed = rules.scrub_pii("Ram 9876543210, Aadhaar 2345-6789-0123, PAN ABCDE1234F, card 4111 1111 1111 1111")
+    assert "9876543210" not in clean and "2345" not in clean and "ABCDE1234F" not in clean and "4111" not in clean
+    assert set(removed) == {"phone number", "Aadhaar number", "PAN", "card or account number"}
+    assert rules.scrub_pii("12 people on the roof at 19.81, 85.83")[1] == []
+    assert rules.cap_priority("RESOURCE_REQUEST", "CRITICAL") == "HIGH"
+    assert rules.cap_priority("PERSON_TRAPPED", "CRITICAL") == "CRITICAL"
+
+
+def test_data_minimisation(client):
+    old = mesh_event(type="FLOOD", priority="HIGH", disaster_id=None, payload={"notes": "Water at door", "needs": ["boat"]},
+                     lat=12.9312, lng=77.6245,
+                     observed_at=(datetime.now(timezone.utc) - timedelta(days=rules.RETENTION_DAYS + 2)).isoformat())
+    client.post("/api/mesh/ingest", json={"gateway_node_id": str(uuid.uuid4()), "events": [old]})
+    n = db.MEMORY.minimise_mesh_events(datetime.now(timezone.utc) - timedelta(days=rules.RETENTION_DAYS))
+    ev = db.MEMORY.get_mesh_event(old["event_id"])
+    assert n >= 1 and ev["payload"] == {"minimised": True, "needs": ["boat"]} and round(ev["lat"], 2) == ev["lat"]
+
+
+def test_relayed_command_alerts_are_not_reingested(client):
+    echo = mesh_event(origin_node_id=mesh.COMMAND_NODE, type="DISASTER_STATUS", priority="HIGH",
+                      payload={"message": "Evacuate", "from": "Volentify incident command"})
+    r = client.post("/api/mesh/ingest", json={"gateway_node_id": str(uuid.uuid4()), "events": [echo]}).json()
+    assert r["accepted_count"] == 0 and r["duplicate_count"] == 1
+    assert db.MEMORY.get_mesh_event(echo["event_id"]) is None

@@ -8,17 +8,25 @@ import { ROLE_META } from '@/lib/constants';
 import { useSession } from '@/lib/session';
 import { cn } from '@/lib/utils';
 import { ButtonLink } from '@/components/ui/Button';
+import { Logo } from '@/components/brand/Logo';
 
+/**
+ * Navigation: the bar holds what people use during an emergency (map, incidents, alerts, volunteering, resources)
+ * plus one "Insights" menu for analysis. Everything about the organisation, policies and partners lives in the
+ * footer; consoles (dashboard, command hub, administration) live in the account menu because they are role-gated.
+ */
 const PRIMARY = [
   { href: '/map', label: 'Map' },
   { href: '/disasters', label: 'Incidents' },
   { href: '/alerts', label: 'Alerts' },
   { href: '/volunteer', label: 'Volunteer' },
+  { href: '/resources', label: 'Resources' },
 ];
 const INTELLIGENCE = [
-  { href: '/predictions', label: 'Forecasts', blurb: 'Storm-surge model and multilingual triage' },
+  { href: '/analytics', label: 'Analytics', blurb: 'Live operations, response impact and past disasters' },
+  { href: '/predictions', label: 'Forecasts', blurb: 'Cyclone models, storm surge and multilingual triage' },
   { href: '/disaster-intelligence', label: 'Satellite & bulletins', blurb: 'Satellite imagery on the tactical map, NDMA warnings' },
-  { href: '/analytics', label: 'Analytics', blurb: 'Operational picture across incidents' },
+  { href: '/transparency', label: 'Transparency', blurb: 'Accountability figures, data held and how decisions are made' },
 ];
 
 function useClickOutside(ref: React.RefObject<HTMLElement | null>, onOutside: () => void) {
@@ -43,6 +51,7 @@ export default function Navbar() {
 
   const active = (href: string) => pathname === href || pathname.startsWith(`${href}/`);
   const consoleLinks = user ? [
+    ...(user.role === 'VOLUNTEER' ? [{ href: '/volunteers/me', label: 'My profile' }] : []),
     { href: '/dashboard', label: 'My dashboard' },
     ...(['INCIDENT_ADMIN', 'NGO_MEMBER'].includes(user.role) ? [{ href: '/agency', label: 'Command hub' }] : []),
     ...(user.role === 'INCIDENT_ADMIN' ? [{ href: '/admin', label: 'Administration' }] : []),
@@ -51,8 +60,8 @@ export default function Navbar() {
   return (
     <header className="sticky top-0 z-50 border-b border-line bg-ink/85 backdrop-blur-xl">
       <div className="page flex h-16 items-center justify-between gap-6">
-        <Link href="/" className="font-serif text-[1.65rem] leading-none text-ivory" aria-label="Volentify home">
-          Volentify
+        <Link href="/" className="shrink-0 rounded-lg" aria-label="Volentify home">
+          <Logo size={28} />
         </Link>
 
         <nav className="hidden items-center gap-1 lg:flex" aria-label="Primary">
@@ -66,7 +75,7 @@ export default function Navbar() {
             <button onClick={() => setIntel((v) => !v)} aria-expanded={intel}
               className={cn('flex items-center gap-1 rounded-lg px-3 py-2 text-sm transition-colors',
                 INTELLIGENCE.some((l) => active(l.href)) ? 'text-ivory' : 'text-stone hover:text-ivory')}>
-              Intelligence <ChevronDown className={cn('h-3.5 w-3.5 transition-transform', intel && 'rotate-180')} aria-hidden />
+              Insights <ChevronDown className={cn('h-3.5 w-3.5 transition-transform', intel && 'rotate-180')} aria-hidden />
             </button>
             {intel && (
               <div className="absolute left-0 top-full mt-2 w-72 animate-fade-up rounded-2xl border border-line bg-ink-900 p-2 shadow-float">
@@ -79,9 +88,6 @@ export default function Navbar() {
               </div>
             )}
           </div>
-          <Link href="/resources" className={cn('rounded-lg px-3 py-2 text-sm transition-colors', active('/resources') ? 'text-ivory' : 'text-stone hover:text-ivory')}>
-            Resources
-          </Link>
         </nav>
 
         <div className="flex items-center gap-2">
@@ -132,10 +138,19 @@ export default function Navbar() {
       {mobile && (
         <nav className="border-t border-line bg-ink lg:hidden" aria-label="Mobile">
           <div className="page grid gap-1 py-4">
-            {[...PRIMARY, ...INTELLIGENCE, { href: '/resources', label: 'Resources' }, { href: '/mesh', label: 'Get the Android app' }, ...consoleLinks].map((l) => (
-              <Link key={l.href} href={l.href} className={cn('rounded-lg px-3 py-2.5 text-[0.9375rem]', active(l.href) ? 'bg-ivory/[0.06] text-ivory' : 'text-sand')}>
-                {l.label}
-              </Link>
+            {[
+              { title: null, links: PRIMARY },
+              { title: 'Insights', links: INTELLIGENCE },
+              { title: user ? 'Your account' : null, links: [...consoleLinks, { href: '/mesh', label: 'Get the Android app' }] },
+            ].map((g, i) => (
+              <div key={i} className={cn('grid gap-1', i > 0 && 'mt-2 border-t border-line pt-3')}>
+                {g.title && <p className="eyebrow px-3 pb-1">{g.title}</p>}
+                {g.links.map((l) => (
+                  <Link key={l.href} href={l.href} className={cn('rounded-lg px-3 py-2.5 text-[0.9375rem]', active(l.href) ? 'bg-ivory/[0.06] text-ivory' : 'text-sand')}>
+                    {l.label}
+                  </Link>
+                ))}
+              </div>
             ))}
             <div className="mt-3 flex gap-2 border-t border-line pt-4">
               <ButtonLink href="tel:112" variant="danger" size="sm"><Phone className="h-3.5 w-3.5" />Call 112</ButtonLink>

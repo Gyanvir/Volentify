@@ -57,6 +57,23 @@ class MemoryStore:
             self.mesh_nodes: dict[str, dict] = {}
             self.mesh_events: dict[str, dict] = {}
             self.cache: dict[str, tuple[float, Any]] = {}
+            self.reviews: dict[tuple[str, str], dict] = {}
+            self.audit: list[dict] = []
+            self.blocked: dict[str, dict] = {}
+            self._provision_regulators()
+
+    def _provision_regulators(self) -> None:
+        """The platform regulator accounts exist in every store, like schema.sql creates them in PostgreSQL."""
+        from ..data.migrations import REGULATOR_PROFILE
+        from ..data.regulators import REGULATORS
+        ts = utcnow()
+        for r in REGULATORS:
+            self.users[r["id"]] = {
+                "id": r["id"], "name": r["name"], "email": r["email"], "phone": "", "password_hash": r["password_hash"],
+                "role": "INCIDENT_ADMIN", "state_district": None, "lat": None, "lng": None, "provider": "credentials",
+                "google_id": None, "avatar_url": None, "blood_group": None, "emergency_contact": None,
+                "is_verified": True, "onboarded": True, "org_id": None, "profile_data": dict(REGULATOR_PROFILE),
+                "muster_code": None, "muster_issued_at": None, "created_at": ts, "updated_at": ts}
 
     def load(self, dataset: dict[str, list[dict]]) -> None:
         """Install a dataset (used by the test suite's fixtures)."""
@@ -268,6 +285,142 @@ class MemoryStore:
         return copy.deepcopy(sorted(self.mesh_nodes.values(), key=lambda n: n["last_seen_at"], reverse=True))
 
 
+    def list_blocked_nodes(self) -> list[dict]:
+        return copy.deepcopy(sorted(self.blocked.values(), key=lambda b: b["created_at"], reverse=True))
+
+    def blocked_among(self, node_uuids: list[str]) -> set[str]:
+        return {u for u in node_uuids if u in self.blocked}
+
+    def block_node(self, node_uuid: str, reason: str, blocked_by: Optional[str]) -> dict:
+        with self._lock:
+            row = {"node_uuid": node_uuid, "reason": reason, "blocked_by": blocked_by, "created_at": utcnow()}
+            self.blocked.setdefault(node_uuid, row)
+            return copy.deepcopy(self.blocked[node_uuid])
+
+    def unblock_node(self, node_uuid: str) -> bool:
+        with self._lock:
+            return self.blocked.pop(node_uuid, None) is not None
+
+    def minimise_mesh_events(self, before: datetime) -> int:
+        """DPDP data minimisation: strip free text and coarsen coordinates of old reports (see rules.py)."""
+        closed = {d["id"] for d in self.disasters.values() if d.get("status") == "CLOSED"}
+        n = 0
+        with self._lock:
+            for ev in self.mesh_events.values():
+                payload = ev.get("payload") or {}
+                if ev["observed_at"] >= before or payload.get("minimised"):
+                    continue
+                if ev.get("disaster_id") and ev["disaster_id"] not in closed:
+                    continue
+                ev["payload"] = {"minimised": True, **{k: payload[k] for k in ("count", "needs", "count_band")
+                                                       if k in payload}}
+                if ev.get("lat") is not None:
+                    ev["lat"], ev["lng"] = round(ev["lat"], 2), round(ev["lng"], 2)
+                n += 1
+        return n
+
+    # volunteers: profile & mission bookkeeping
+    def get_volunteer(self, volunteer_id: str) -> Optional[dict]:
+        vol = self.volunteers.get(volunteer_id)
+        if not vol:
+            return None
+        out = copy.deepcopy(vol)
+        out["active_missions"] = sum(1 for t in self.tasks.values() if t.get("assigned_to_id") == vol["user_id"]
+                                     and t["status"] in ACTIVE_TASK_STATES)
+        return out
+
+    def set_volunteer_location(self, user_id: str, lat: float, lng: float, location_name: Optional[str]) -> None:
+        with self._lock:
+            for vol in self.volunteers.values():
+                if vol.get("user_id") == user_id:
+                    vol["lat"], vol["lng"] = lat, lng
+                    if location_name:
+                        vol["location_name"] = location_name
+
+    def record_mission_completion(self, user_id: str, hours: float) -> None:
+        with self._lock:
+            for vol in self.volunteers.values():
+                if vol.get("user_id") == user_id:
+                    vol["missions_done"] = int(vol.get("missions_done") or 0) + 1
+                    vol["total_hours"] = round(float(vol.get("total_hours") or 0) + hours, 2)
+
+    def release_stale_assignments(self, cutoff: datetime) -> list[dict]:
+        released = []
+        with self._lock:
+            for t in self.tasks.values():
+                accepted = t.get("accepted_at") or t.get("updated_at")
+                if t["status"] == "ASSIGNED" and accepted and accepted < cutoff:
+                    released.append({"id": t["id"], "code": t["code"], "released_from": t.get("assigned_to_id")})
+                    t.update(status="OPEN", assigned_to_id=None, accepted_at=None, updated_at=utcnow())
+        return released
+
+    # reviews
+    def upsert_review(self, review: dict) -> dict:
+        with self._lock:
+            key = (review["volunteer_user_id"], review["author_id"])
+            existing = self.reviews.get(key)
+            if existing:
+                existing.update(rating=review["rating"], comment=review["comment"],
+                                task_id=review.get("task_id") or existing.get("task_id"), updated_at=utcnow())
+            else:
+                self.reviews[key] = copy.deepcopy(review)
+            return copy.deepcopy(self.reviews[key])
+
+    def list_reviews(self, volunteer_user_id: str) -> list[dict]:
+        out = []
+        for r in self.reviews.values():
+            if r["volunteer_user_id"] != volunteer_user_id:
+                continue
+            author = self.users.get(r["author_id"]) or {}
+            task = self.tasks.get(r.get("task_id") or "") or {}
+            out.append({**copy.deepcopy(r), "author_name": author.get("name", "Member"),
+                        "author_role": author.get("role", "CITIZEN"), "task_code": task.get("code")})
+        return sorted(out, key=lambda r: r["updated_at"], reverse=True)
+
+    # audit trail
+    def add_audit(self, row: dict) -> dict:
+        from .audit import chain_hash
+        with self._lock:
+            prev = self.audit[-1]["hash"] if self.audit else ""
+            entry = {**copy.deepcopy(row), "id": len(self.audit) + 1, "prev_hash": prev}
+            entry["hash"] = chain_hash(prev, row)
+            self.audit.append(entry)
+            return copy.deepcopy(entry)
+
+    def list_audit(self, limit: int = 200, action: Optional[str] = None, actor: Optional[str] = None) -> list[dict]:
+        rows = [a for a in self.audit if (not action or a["action"].startswith(action))
+                and (not actor or actor in (a.get("actor_email") or "") or actor == a.get("actor_id"))]
+        return copy.deepcopy(list(reversed(rows))[:limit])
+
+    # transparency: raw rows for engines/transparency.py (no personal data)
+    def transparency_rows(self) -> dict[str, list[dict]]:
+        def pick(rows, *keys):
+            return [{k: r.get(k) for k in keys} for r in rows]
+        mesh = []
+        for e in self.mesh_events.values():
+            payload = e.get("payload") if isinstance(e.get("payload"), dict) else {}
+            count = payload.get("count")
+            mesh.append({"type": e["type"], "priority": e["priority"], "review_status": e["review_status"],
+                         "observed_at": e["observed_at"], "received_at": e["received_at"],
+                         "count": count if isinstance(count, int) else None, "origin_node_id": e["origin_node_id"]})
+        users = {u["id"]: u for u in self.users.values()}
+        return {
+            "disasters": pick(self.disasters.values(), "source", "category", "status", "severity", "created_at"),
+            "alerts": pick(self.alerts, "level", "category", "created_at"),
+            "mesh": mesh,
+            "nodes": pick(self.mesh_nodes.values(), "last_seen_at"),
+            "tasks": pick(self.tasks.values(), "status", "urgency", "required_skill", "created_at", "accepted_at",
+                          "started_at", "completed_at", "people_helped", "assigned_to_id"),
+            "volunteers": [{"availability": v["availability"], "skills": v.get("skills") or [],
+                            "verified": bool((users.get(v.get("user_id")) or {}).get("is_verified", v.get("verified")))}
+                           for v in self.volunteers.values()],
+            "users": pick(self.users.values(), "role", "is_verified", "created_at"),
+            "reviews": pick(self.reviews.values(), "rating"),
+            "audit": pick(self.audit, "action", "at"),
+            "blocked": pick(self.blocked.values(), "created_at"),
+        }
+
+
 # ─── PostgreSQL store ───────────────────────────────────────────────────────
 
 def _clean_dsn(url: str) -> str:
@@ -302,7 +455,8 @@ _DISASTER_COLS = ("id, code, title, category, severity, lat, lng, location, stat
                   "status, affected_pop, summary, wind_speed_kmh, rainfall_mm, surge_meters, org_id, "
                   "created_at, updated_at, source, source_url, external_id")
 _TASK_COLS = ("id, code, title, description, urgency, required_skill, lat, lng, location_name, quantity_needed, "
-              "status, disaster_id, created_by_id, assigned_to_id, created_at, updated_at")
+              "status, disaster_id, created_by_id, assigned_to_id, created_at, updated_at, accepted_at, started_at, "
+              "completed_at, start_lat, start_lng, people_helped, outcome_note")
 _MESH_COLS = ("id, event_id, origin_node_id, disaster_id, type, priority, payload, lat, lng, observed_at, "
               "hop_count, ttl, received_at, review_status, promoted_task_id")
 _NODE_COLS = "id, node_uuid, volunteer_id, last_lat, last_lng, battery_level, last_seen_at, created_at"
@@ -569,6 +723,122 @@ class PostgresStore:
 
     def list_mesh_nodes(self) -> list[dict]:
         return self._all(f"SELECT {_NODE_COLS} FROM mesh_nodes ORDER BY last_seen_at DESC LIMIT 500")
+
+
+    # quarantined nodes & data minimisation
+    def list_blocked_nodes(self) -> list[dict]:
+        return self._all("SELECT node_uuid, reason, blocked_by, created_at FROM blocked_nodes ORDER BY created_at DESC")
+
+    def blocked_among(self, node_uuids: list[str]) -> set[str]:
+        if not node_uuids:
+            return set()
+        return {r["node_uuid"] for r in self._all("SELECT node_uuid FROM blocked_nodes WHERE node_uuid = ANY(%s)",
+                                                  (list(node_uuids),))}
+
+    def block_node(self, node_uuid: str, reason: str, blocked_by: Optional[str]) -> dict:
+        self._one("INSERT INTO blocked_nodes (node_uuid, reason, blocked_by) VALUES (%s, %s, %s) "
+                  "ON CONFLICT (node_uuid) DO NOTHING RETURNING node_uuid", (node_uuid, reason, blocked_by))
+        return self._one("SELECT node_uuid, reason, blocked_by, created_at FROM blocked_nodes WHERE node_uuid = %s",
+                         (node_uuid,))  # type: ignore[return-value]
+
+    def unblock_node(self, node_uuid: str) -> bool:
+        return self._one("DELETE FROM blocked_nodes WHERE node_uuid = %s RETURNING node_uuid", (node_uuid,)) is not None
+
+    def minimise_mesh_events(self, before: datetime) -> int:
+        with self._conn() as conn:
+            cur = conn.execute(
+                "UPDATE mesh_events SET payload = jsonb_strip_nulls(jsonb_build_object('minimised', true, "
+                "'count', payload->'count', 'needs', payload->'needs', 'count_band', payload->'count_band')), "
+                "lat = round(lat::numeric, 2)::double precision, lng = round(lng::numeric, 2)::double precision "
+                "WHERE observed_at < %s AND NOT (payload ? 'minimised') AND (disaster_id IS NULL OR disaster_id IN "
+                "(SELECT id FROM disasters WHERE status = 'CLOSED'))", (before,))
+            return cur.rowcount or 0
+
+    # volunteers: profile & mission bookkeeping
+    def get_volunteer(self, volunteer_id: str) -> Optional[dict]:
+        return self._one(f"{_VOL_SELECT} WHERE vp.id = %s", (volunteer_id,))
+
+    def set_volunteer_location(self, user_id: str, lat: float, lng: float, location_name: Optional[str]) -> None:
+        self._one("UPDATE volunteer_profiles SET current_lat = %s, current_lng = %s, "
+                  "location_name = COALESCE(%s, location_name), updated_at = now() WHERE user_id = %s RETURNING id",
+                  (lat, lng, location_name, user_id))
+
+    def record_mission_completion(self, user_id: str, hours: float) -> None:
+        self._one("UPDATE volunteer_profiles SET missions_done = missions_done + 1, "
+                  "total_hours = total_hours + %s, updated_at = now() WHERE user_id = %s RETURNING id", (hours, user_id))
+
+    def release_stale_assignments(self, cutoff: datetime) -> list[dict]:
+        return self._all(
+            "WITH stale AS (SELECT id, assigned_to_id FROM tasks WHERE status = 'ASSIGNED' "
+            "AND COALESCE(accepted_at, updated_at) < %s FOR UPDATE SKIP LOCKED) "
+            "UPDATE tasks t SET status = 'OPEN', assigned_to_id = NULL, accepted_at = NULL, updated_at = now() "
+            "FROM stale WHERE t.id = stale.id RETURNING t.id, t.code, stale.assigned_to_id AS released_from",
+            (cutoff,))
+
+    # reviews
+    def upsert_review(self, review: dict) -> dict:
+        return self._one(
+            "INSERT INTO volunteer_reviews (id, volunteer_user_id, author_id, task_id, rating, comment, created_at, "
+            "updated_at) VALUES (%(id)s, %(volunteer_user_id)s, %(author_id)s, %(task_id)s, %(rating)s, %(comment)s, "
+            "now(), now()) ON CONFLICT (volunteer_user_id, author_id) DO UPDATE SET rating = EXCLUDED.rating, "
+            "comment = EXCLUDED.comment, task_id = COALESCE(EXCLUDED.task_id, volunteer_reviews.task_id), "
+            "updated_at = now() RETURNING id, volunteer_user_id, author_id, task_id, rating, comment, created_at, "
+            "updated_at", review)  # type: ignore[return-value]
+
+    def list_reviews(self, volunteer_user_id: str) -> list[dict]:
+        return self._all(
+            "SELECT r.id, r.volunteer_user_id, r.author_id, r.task_id, r.rating, r.comment, r.created_at, "
+            "r.updated_at, u.name AS author_name, u.role::text AS author_role, t.code AS task_code "
+            "FROM volunteer_reviews r JOIN users u ON u.id = r.author_id LEFT JOIN tasks t ON t.id = r.task_id "
+            "WHERE r.volunteer_user_id = %s ORDER BY r.updated_at DESC LIMIT 100", (volunteer_user_id,))
+
+    # audit trail
+    def add_audit(self, row: dict) -> dict:
+        from .audit import chain_hash
+        with self._conn() as conn, conn.transaction():
+            conn.execute("SELECT pg_advisory_xact_lock(727276)")  # one writer at a time keeps the hash chain linear
+            prev_row = conn.execute("SELECT hash FROM audit_log ORDER BY id DESC LIMIT 1").fetchone()
+            prev = (prev_row or {}).get("hash") or ""
+            data = dict(row, detail=self._json(row.get("detail") or {}), prev_hash=prev, hash=chain_hash(prev, row))
+            cols = ", ".join(data)
+            vals = ", ".join(f"%({k})s" for k in data)
+            return self._utc(conn.execute(f"INSERT INTO audit_log ({cols}) VALUES ({vals}) RETURNING id, at, hash",
+                                          data).fetchone())  # type: ignore[return-value]
+
+    def list_audit(self, limit: int = 200, action: Optional[str] = None, actor: Optional[str] = None) -> list[dict]:
+        clauses, params = [], []
+        if action:
+            clauses.append("action LIKE %s")
+            params.append(action.replace("%", "") + "%")
+        if actor:
+            clauses.append("(actor_email ILIKE %s OR actor_id = %s)")
+            params += [f"%{actor.replace('%', '')}%", actor]
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        params.append(limit)
+        return self._all("SELECT id, at, actor_id, actor_email, actor_role, action, target_type, target_id, detail, "
+                         f"ip, prev_hash, hash FROM audit_log {where} ORDER BY id DESC LIMIT %s", tuple(params))
+
+    # transparency: raw rows for engines/transparency.py (no personal data)
+    def transparency_rows(self) -> dict[str, list[dict]]:
+        queries = {
+            "disasters": "SELECT source, category, status, severity::text AS severity, created_at FROM disasters",
+            "alerts": "SELECT level::text AS level, category, created_at FROM alerts",
+            "mesh": "SELECT type::text AS type, priority::text AS priority, review_status::text AS review_status, "
+                    "observed_at, received_at, CASE WHEN jsonb_typeof(payload->'count') = 'number' "
+                    "THEN (payload->>'count')::numeric::int END AS count, origin_node_id "
+                    "FROM mesh_events ORDER BY observed_at DESC LIMIT 50000",
+            "nodes": "SELECT last_seen_at FROM mesh_nodes",
+            "tasks": "SELECT status::text AS status, urgency::text AS urgency, required_skill, created_at, accepted_at, "
+                     "started_at, completed_at, people_helped, assigned_to_id FROM tasks",
+            "volunteers": "SELECT vp.availability, vp.skills, u.is_verified AS verified FROM volunteer_profiles vp "
+                          "JOIN users u ON u.id = vp.user_id",
+            "users": "SELECT role::text AS role, is_verified, created_at FROM users",
+            "reviews": "SELECT rating FROM volunteer_reviews",
+            "audit": "SELECT action, at FROM audit_log WHERE at > now() - interval '180 days'",
+            "blocked": "SELECT created_at FROM blocked_nodes",
+        }
+        with self._conn() as conn:
+            return {key: [self._utc(r) for r in conn.execute(sql).fetchall()] for key, sql in queries.items()}
 
 
 # ─── Routing between stores ─────────────────────────────────────────────────

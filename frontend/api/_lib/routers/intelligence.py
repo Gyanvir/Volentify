@@ -7,7 +7,7 @@ from fastapi.concurrency import run_in_threadpool
 
 from ..core import db, research
 from ..core.security import RateLimiter
-from ..engines import briefing, cyclone, dedup, dispatch, intel, live, surge, triage
+from ..engines import briefing, cyclone, dedup, dispatch, intel, live, rules, surge, triage
 from ..schemas import (
     BriefingRequest, DeduplicatedEvent, DispatchRequest, DispatchResult, MatchRequest, NearbyRequest,
     PredictionRequest, PredictionResponse, RankedMatch, RawReport, SituationBriefing, TriageRequest,
@@ -111,12 +111,24 @@ async def live_refresh():
     _refresh_limiter.check("live-refresh")
     report = await run_in_threadpool(live.ensure_fresh, False, 120)
     incidents, _ = await run_in_threadpool(db.read, lambda s: s.list_disasters())
-    from .entities import _cache_get, _cache_put
+    from .entities import _cache_get, _cache_put, mission_watchdog
     facilities = await run_in_threadpool(intel.relief_facilities, incidents, _cache_get, _cache_put)
     bulletins = await intel.sachet_bulletins(limit=1)
+    await run_in_threadpool(mission_watchdog)
+    minimised = await run_in_threadpool(_minimise_old_reports)
     return {**report, "active_incidents": len(incidents), "facilities_mode": facilities["mode"],
             "hospitals": len(facilities["hospitals"]), "shelters": len(facilities["shelters"]),
-            "bulletins_mode": bulletins["mode"]}
+            "bulletins_mode": bulletins["mode"], "reports_minimised": minimised}
+
+
+def _minimise_old_reports() -> int:
+    """Data minimisation (rules.RETENTION_DAYS): runs with the 15-minute live refresh."""
+    from datetime import datetime, timedelta, timezone
+    cutoff = datetime.now(timezone.utc) - timedelta(days=rules.RETENTION_DAYS)
+    try:
+        return db.write(lambda s: s.minimise_mesh_events(cutoff))[0]
+    except Exception:  # noqa: BLE001
+        return 0
 
 
 @router.get("/live/status")

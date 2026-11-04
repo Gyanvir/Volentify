@@ -67,7 +67,7 @@ export default function TermsPage() {
           <h2>Open-source licence</h2>
           <p>
             The Volentify source code is released under the MIT licence and is available on the{' '}
-            <a href="https://github.com/thehimanshubansal/Volentify">project repository</a>. The licence covers the code, not
+            <a href="https://github.com/Gyanvir/Volentify">project repository</a>. The licence covers the code, not
             the data contributed by users or partner agencies.
           </p>
 

@@ -14,6 +14,8 @@ object MeshState {
         val received: Int = 0,
         val sent: Int = 0,
         val error: String? = null,
+        /** Battery ≤ 15 % and not charging: the relay scans and advertises less often (see BleMeshService). */
+        val batterySaver: Boolean = false,
     )
 
     private val state = MutableStateFlow(Snapshot())

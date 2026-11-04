@@ -37,6 +37,14 @@ export interface TacticalMapProps {
   onBasemapChange?: (id: string) => void;
   /** Controlled precipitation-radar overlay. */
   radar?: boolean;
+  /** A responder's way to a mission: road geometry when routing succeeded, otherwise a straight dashed line. */
+  route?: MissionRoute | null;
+}
+
+export interface MissionRoute {
+  from: { lat: number; lng: number };
+  to: { lat: number; lng: number };
+  line: GeoJSON.LineString | null;
 }
 
 const BASEMAP_DARK = 'dark';
@@ -74,7 +82,7 @@ function meshMarker(e: MeshEvent, selected: boolean): HTMLElement {
 }
 
 export default function TacticalMap({
-  variant = 'full', focusDisasterId, className, initialBasemap, basemap: basemapProp, onBasemapChange, radar,
+  variant = 'full', focusDisasterId, className, initialBasemap, basemap: basemapProp, onBasemapChange, radar, route,
 }: TacticalMapProps) {
   const full = variant === 'full';
   const data = useMapData();
@@ -286,6 +294,39 @@ export default function TacticalMap({
   useEffect(() => {
     if (radar !== undefined) setLayers((l) => (l.radar === radar ? l : { ...l, radar }));
   }, [radar]);
+
+  // Mission route: drawn above every operational layer; the view fits the whole way from start to mission.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!ready || !map || !route) return;
+    const coords = (route.line?.coordinates ?? [[route.from.lng, route.from.lat], [route.to.lng, route.to.lat]]) as [number, number][];
+    const fc = featureCollection([
+      { type: 'Feature', geometry: { type: 'LineString', coordinates: coords }, properties: { kind: route.line ? 'road' : 'direct' } },
+      point(route.from.lng, route.from.lat, { end: 'start' }),
+      point(route.to.lng, route.to.lat, { end: 'mission' }),
+    ]);
+    const source = map.getSource('route') as maplibregl.GeoJSONSource | undefined;
+    if (source) {
+      source.setData(fc);
+    } else {
+      map.addSource('route', { type: 'geojson', data: fc });
+      const line = ['==', '$type', 'LineString'] as maplibregl.FilterSpecification;
+      map.addLayer({ id: 'route-casing', type: 'line', source: 'route', filter: line, layout: { 'line-join': 'round', 'line-cap': 'round' },
+        paint: { 'line-color': '#07080a', 'line-width': 9, 'line-opacity': 0.85 } });
+      map.addLayer({ id: 'route-road', type: 'line', source: 'route', filter: ['all', line, ['==', 'kind', 'road']] as maplibregl.FilterSpecification,
+        layout: { 'line-join': 'round', 'line-cap': 'round' }, paint: { 'line-color': '#ff6b00', 'line-width': 4.5 } });
+      map.addLayer({ id: 'route-direct', type: 'line', source: 'route', filter: ['all', line, ['==', 'kind', 'direct']] as maplibregl.FilterSpecification,
+        layout: { 'line-cap': 'round' }, paint: { 'line-color': '#ff6b00', 'line-width': 3.5, 'line-dasharray': [2, 1.6] } });
+      map.addLayer({ id: 'route-ends', type: 'circle', source: 'route', filter: ['==', '$type', 'Point'] as maplibregl.FilterSpecification,
+        paint: { 'circle-radius': 7.5, 'circle-color': ['match', ['get', 'end'], 'start', '#f4f1ea', '#ff6b00'] as unknown as string,
+          'circle-stroke-color': '#07080a', 'circle-stroke-width': 3 } });
+    }
+    const bounds = coords.reduce((b, c) => b.extend(c), new maplibregl.LngLatBounds(coords[0], coords[0]));
+    // Leave room for the route panel: a side card on wide screens, a bottom sheet on phones.
+    const wide = map.getContainer().clientWidth >= 640;
+    map.fitBounds(bounds, { padding: wide ? { top: 110, bottom: 90, left: 70, right: 400 } : { top: 130, bottom: 340, left: 40, right: 40 },
+      maxZoom: 15, duration: 1200 });
+  }, [ready, route]);
 
   // Satellite imagery under the operational layers: incidents, reports, missions and labels stay on top.
   useEffect(() => {

@@ -47,7 +47,7 @@ export default function AboutPage() {
           <h2>Open source</h2>
           <p>
             The platform is released under the MIT licence. The source, schema and API reference are public at{' '}
-            <a href="https://github.com/thehimanshubansal/Volentify">github.com/thehimanshubansal/Volentify</a>.
+            <a href="https://github.com/Gyanvir/Volentify">github.com/Gyanvir/Volentify</a>.
           </p>
         </Prose>
         <aside className="space-y-8 lg:pt-1">
