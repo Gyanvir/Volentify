@@ -182,21 +182,56 @@ def muster_signature(user_id: str, code: str, issued_at: datetime) -> str:
 # ─── Rate limiting (SEC-06) ─────────────────────────────────────────────────
 
 class RateLimiter:
-    """Sliding-window limiter. Per-instance on serverless — a guard rail, not a quota system."""
+    """Sliding-window limiter. Per-instance on serverless — a guard rail, not a quota system.
+
+    For limits that must hold across every serverless instance (sign-in attempts), use `durable_hits`.
+    """
+
+    MAX_KEYS = 20_000  # a crawler rotating addresses must not grow memory without bound
 
     def __init__(self, limit: int, window_s: float) -> None:
         self.limit, self.window = limit, window_s
         self._hits: dict[str, deque[float]] = defaultdict(deque)
 
-    def check(self, key: str) -> None:
+    def allow(self, key: str) -> bool:
         now = time.monotonic()
+        if len(self._hits) > self.MAX_KEYS:
+            for k in [k for k, q in self._hits.items() if not q or now - q[-1] > self.window]:
+                del self._hits[k]
+            if len(self._hits) > self.MAX_KEYS:
+                self._hits.clear()
         hits = self._hits[key]
         while hits and now - hits[0] > self.window:
             hits.popleft()
         if len(hits) >= self.limit:
+            return False
+        hits.append(now)
+        return True
+
+    def check(self, key: str) -> None:
+        if not self.allow(key):
             raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, "Too many requests — retry shortly",
                                 headers={"Retry-After": str(int(self.window))})
-        hits.append(now)
+
+
+def durable_hits(key: str, window_s: int, increment: bool = True) -> int:
+    """Count events for `key` in a fixed window shared by every API instance (PostgreSQL `rate_limits`).
+
+    Falls back to the in-memory store when no database is reachable, so it never blocks a request by failing.
+    """
+    from . import db
+    try:
+        return db.write(lambda s: s.hit_rate(key, window_s, increment))[0]
+    except Exception:  # noqa: BLE001 — a limiter must never take the endpoint down with it
+        return 0
+
+
+def public_name(name: str) -> str:
+    """'Asha Rao' → 'Asha R.' for people who aren't signed in, so scrapers can't harvest full names."""
+    parts = (name or "").split()
+    if len(parts) < 2:
+        return name or "Volunteer"
+    return f"{parts[0]} {parts[-1][0]}."
 
 
 def client_key(request: Request) -> str:

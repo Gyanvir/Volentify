@@ -310,6 +310,8 @@ class RegisterRequest(APIModel):
     email: str = Field(min_length=5, max_length=160)
     password: str = Field(min_length=8, max_length=128)
     role: Role = Role.CITIZEN
+    # Honeypot: a field people never see. Bots that fill every input reveal themselves.
+    website: Optional[str] = Field(default=None, max_length=200)
 
     @field_validator("email")
     @classmethod
@@ -680,6 +682,7 @@ class CitizenReport(APIModel):
     lat: Optional[float] = Field(default=None, ge=-90, le=90)
     lng: Optional[float] = Field(default=None, ge=-180, le=180)
     disaster_id: Optional[str] = None
+    website: Optional[str] = Field(default=None, max_length=200)  # honeypot, see RegisterRequest
 
 
 class CitizenReportResponse(APIModel):

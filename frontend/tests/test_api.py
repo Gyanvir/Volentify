@@ -34,7 +34,10 @@ def clean_state(monkeypatch):
     db.MEMORY.load(fixtures.DATASET)  # fictional test dataset — the app itself ships none
     db._state["down_until"] = 0.0
     db._pg = None
-    for limiter in (auth._login_limiter, entities._report_limiter, mesh._ingest_limiter, mesh._public_ingest_limiter):
+    import api.index as api_index
+    for limiter in (auth._login_limiter, entities._report_limiter, mesh._ingest_limiter, mesh._public_ingest_limiter,
+                    api_index._general_limiter, api_index._heavy_limiter, entities._review_limiter,
+                    mesh._broadcast_limiter, mesh._downlink_limiter):
         limiter._hits.clear()
     yield
     get_settings.cache_clear()
@@ -62,6 +65,14 @@ def command(client, email="chief@ndrf.gov.in", role="INCIDENT_ADMIN"):
     db.MEMORY.update_user(user["id"], {"role": role, "is_verified": True})
     assert client.post("/api/auth/login", json={"email": email, "password": "s3cure-pass!"}).status_code == 200
     return user
+
+
+def admin_session(client):
+    """Sign the client in as a verified administrator directly (works in production mode, where cookies are Secure)."""
+    from api._lib.core.security import SESSION_COOKIE, issue_session
+    token = issue_session({"id": "usr_test_admin", "email": "admin@test.invalid", "name": "Admin", "role": "INCIDENT_ADMIN",
+                           "onboarded": True, "is_verified": True})
+    client.cookies.set(SESSION_COOKIE, token)
 
 
 def mesh_event(**over):
@@ -265,7 +276,8 @@ def test_dispatch_protects_rare_specialists(client):
     # Critical boat rescue goes to boat specialists, and specialists are never spent on kit packing
     # while generic responders are available.
     packing = by_task.get("TSK-003", [])
-    assert packing and all(a["volunteer_name"] in {"Anita Patel", "Manoj Nayak"} for a in packing[:2])
+    # Signed-out visitors see first names and initials only.
+    assert packing and all(a["volunteer_name"] in {"Anita P.", "Manoj N."} for a in packing[:2])
     order = [a["urgency"] for a in result["assignments"]]
     assert order == sorted(order, key=dispatch.URGENCY_RANK.get)
     assert any(b["task_code"] == "TSK-003" for b in result["bottlenecks"]) or len(packing) == 4
@@ -354,6 +366,8 @@ def test_database_url_aliases_and_derived_session_key(client, monkeypatch):
     settings = get_settings()
     assert settings.database_url_var == "DB_URL"
     assert settings.session_secret_source == "derived" and len(settings.session_secret) == 64
+    assert "configuration" not in client.get("/api/health").json()  # hidden from the public
+    admin_session(client)
     body = client.get("/api/health").json()
     assert body["configuration"]["database_variable"] == "DB_URL"
     assert body["configuration"]["session_key"] == "derived"
@@ -537,6 +551,7 @@ def test_health_explains_degraded_database(client, monkeypatch):
     monkeypatch.setenv("DATABASE_URL", "postgresql://u:secretpw@127.0.0.1:1/none?sslmode=disable")
     get_settings.cache_clear()
     db._pg = None
+    admin_session(client)
     body = client.get("/api/health").json()
     assert body["database"] == "DEGRADED" and body["database_error"].startswith("OperationalError")
     assert "secretpw" not in str(body) and "127.0.0.1" not in str(body)
@@ -808,3 +823,75 @@ def test_relayed_command_alerts_are_not_reingested(client):
     r = client.post("/api/mesh/ingest", json={"gateway_node_id": str(uuid.uuid4()), "events": [echo]}).json()
     assert r["accepted_count"] == 0 and r["duplicate_count"] == 1
     assert db.MEMORY.get_mesh_event(echo["event_id"]) is None
+
+
+# ─── Abuse protection: scanners, scrapers, CSRF, lockout, honeypots, headers ─
+
+def test_scanners_and_scrapers_are_refused(client):
+    assert client.get("/api/disasters", headers={"User-Agent": "sqlmap/1.7"}).status_code == 403
+    assert client.get("/api/volunteers", headers={"User-Agent": "Mozilla/5.0 (compatible; GPTBot/1.2)"}).status_code == 403
+    assert client.get("/api/disasters", headers={"User-Agent": "okhttp/4.12.0"}).status_code == 200
+
+
+def test_security_headers_on_api(client):
+    r = client.get("/api/disasters")
+    assert r.headers["X-Content-Type-Options"] == "nosniff" and r.headers["X-Frame-Options"] == "DENY"
+    assert "noindex" in r.headers["X-Robots-Tag"] and "default-src 'none'" in r.headers["Content-Security-Policy"]
+    assert "Content-Security-Policy" not in client.get("/api/docs").headers
+    signup(client, "nostore@example.org")
+    assert client.get("/api/auth/me").headers["Cache-Control"] == "no-store"
+
+
+def test_cross_site_writes_are_refused(client, monkeypatch):
+    signup(client, "csrf@example.org")
+    evil = client.post("/api/mesh/broadcast", json={"message": "hello"}, headers={"Origin": "https://evil.example"})
+    assert evil.status_code == 403
+    same = client.post("/api/mesh/broadcast", json={"message": "hello there"}, headers={"Origin": "http://testserver"})
+    assert same.status_code == 201
+    # Phones send no Origin at all.
+    assert client.post("/api/mesh/ingest", json={"gateway_node_id": str(uuid.uuid4()), "events": [mesh_event()]}).status_code == 200
+
+
+def test_account_lockout_after_repeated_wrong_passwords(client):
+    from api._lib.routers import auth as auth_router
+    signup(client, "victim@example.org")
+    client.post("/api/auth/logout")
+    for i in range(auth_router.MAX_FAILED_PER_ACCOUNT):
+        auth_router._login_limiter._hits.clear()
+        assert client.post("/api/auth/login", json={"email": "victim@example.org", "password": f"guess-{i}"}).status_code == 401
+    auth_router._login_limiter._hits.clear()
+    r = client.post("/api/auth/login", json={"email": "victim@example.org", "password": "s3cure-pass!"})
+    assert r.status_code == 429 and "locked" in r.json()["detail"]
+    db.MEMORY.rates.clear()
+    assert client.post("/api/auth/login", json={"email": "victim@example.org", "password": "s3cure-pass!"}).status_code == 200
+
+
+def test_honeypots(client):
+    r = client.post("/api/auth/register", json={"name": "Bot", "email": "bot@example.org", "password": "s3cure-pass!",
+                                                "website": "http://spam.example"})
+    assert r.status_code == 400 and db.MEMORY.get_user_by_email("bot@example.org") is None
+    before = len(db.MEMORY.mesh_events)
+    r = client.post("/api/reports", json={"text": "Cheap pills at our site", "location": "Delhi", "website": "spam"})
+    assert r.status_code == 201 and len(db.MEMORY.mesh_events) == before
+
+
+def test_signed_out_visitors_see_initials_only(client):
+    public = client.get("/api/volunteers").json()
+    assert public and all(v["name"].endswith(".") or " " not in v["name"] for v in public)
+    signup(client, "member@example.org")
+    full = client.get("/api/volunteers").json()
+    assert any(" " in v["name"] and not v["name"].endswith(".") for v in full)
+
+
+def test_oversized_bodies_are_refused(client):
+    r = client.post("/api/reports", content=b"x" * 1_100_000, headers={"Content-Type": "application/json"})
+    assert r.status_code == 413
+
+
+def test_api_map_hidden_on_live_site(client, monkeypatch):
+    assert client.get("/api/openapi.json").status_code == 200  # local and preview: open for developers
+    monkeypatch.setenv("VOLENTIFY_ENV", "production")
+    get_settings.cache_clear()
+    assert client.get("/api/openapi.json").status_code == 404
+    assert client.get("/api/docs").status_code == 404
+    assert "Strict-Transport-Security" in client.get("/api/disasters").headers

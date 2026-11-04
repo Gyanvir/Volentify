@@ -13,7 +13,7 @@ from typing import Literal, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 
 from ..core import audit, db
-from ..core.security import RateLimiter, client_key, current_claims, require_roles, require_session
+from ..core.security import RateLimiter, client_key, current_claims, public_name, require_roles, require_session
 from ..data.reference import HOTLINES
 from ..engines import advisories, briefing, dispatch, history, intel, live, rules, transparency, triage
 from ..engines.geo import haversine_km
@@ -296,7 +296,11 @@ def list_volunteers(request: Request, response: Response,
                     availability: Literal["AVAILABLE", "BUSY", "OFFLINE", "ALL"] = "ALL"):
     rows, source = db.read(lambda s: s.list_volunteers(None if availability == "ALL" else availability))
     tag(response, source)
-    return rows if _trusted(current_claims(request)) else [_coarse(v) for v in rows]
+    claims = current_claims(request)
+    if _trusted(claims):
+        return rows
+    # Public: positions to ~1 km; signed-out visitors (and scrapers) see first name and initial only.
+    return [_coarse(v) if claims else {**_coarse(v), "name": public_name(v["name"])} for v in rows]
 
 
 @router.get("/volunteers/me", response_model=Volunteer)
@@ -482,6 +486,11 @@ def volunteer_profile(volunteer_id: str, request: Request, response: Response):
     if not data:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Volunteer not found")
     tag(response, source)
+    if not claims:  # signed-out visitors and scrapers: first names and initials only
+        data["volunteer"]["name"] = public_name(data["volunteer"]["name"])
+        for r in data["reviews"]:
+            r["author_name"] = public_name(r["author_name"])
+    response.headers["X-Robots-Tag"] = "noindex, nofollow"
     return data
 
 
@@ -600,6 +609,8 @@ def submit_report(body: CitizenReport, request: Request, response: Response):
     _report_limiter.check(client_key(request))
     text, removed = rules.scrub_pii(body.text.strip())
     result = triage.triage(text, body.location)
+    if body.website:  # honeypot filled in: answer like a success so the bot learns nothing, store nothing
+        return {"reference": new_code("REP"), "triage": result, "linked_disaster_id": None, "stored": True, "removed": []}
     claims = current_claims(request)
     secret = hashlib.sha256(f"web-report|{claims['sub'] if claims else client_key(request)}".encode()).hexdigest()
     node = str(uuid.uuid5(NAMESPACE, f"web-report:{secret[:24]}"))

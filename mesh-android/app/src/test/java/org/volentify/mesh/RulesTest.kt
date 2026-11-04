@@ -46,4 +46,16 @@ class RulesTest {
         assertTrue(Rules.claimsAuthority("VOLENTIFY HQ"))
         assertFalse(Rules.claimsAuthority("Puri boat team 4"))
     }
+
+    @Test fun gatewayMustBeEncrypted() {
+        assertTrue(Rules.isSecureServer("https://volentify.vercel.app"))
+        assertTrue(Rules.isSecureServer(" https://ops.example.org/ "))
+        assertTrue(Rules.isSecureServer("http://10.0.2.2:3000")) // emulator talking to a developer's laptop
+        assertFalse(Rules.isSecureServer("http://volentify.vercel.app"))
+        assertFalse(Rules.isSecureServer("ftp://volentify.vercel.app"))
+        assertFalse(Rules.isSecureServer("https://user:pass@volentify.vercel.app"))
+        assertFalse(Rules.isSecureServer("volentify.vercel.app"))
+        assertFalse(Rules.isSecureServer("https://"))
+        assertFalse(Rules.isSecureServer("https://bad host"))
+    }
 }

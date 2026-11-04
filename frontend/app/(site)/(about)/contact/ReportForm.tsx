@@ -7,6 +7,7 @@ import { api, ApiError } from '@/lib/api';
 import type { Triage } from '@/lib/types';
 import { formatCoord, pct, titleCase } from '@/lib/utils';
 import { Button } from '@/components/ui/Button';
+import { Honeypot } from '@/components/ui/Honeypot';
 import { Field, Input, Textarea } from '@/components/ui/Field';
 import { Pill, SeverityBadge } from '@/components/ui/Badge';
 import { ErrorState } from '@/components/ui/DataState';
@@ -19,6 +20,7 @@ const FLAG_LABEL: Record<keyof Triage['flags'], string> = {
 
 export default function ReportForm() {
   const [text, setText] = useState('');
+  const [trap, setTrap] = useState('');
   const [location, setLocation] = useState('');
   const [contact, setContact] = useState('');
   const [coords, setCoords] = useState<{ lat: number; lng: number } | null>(null);
@@ -45,7 +47,7 @@ export default function ReportForm() {
     setBusy(true);
     try {
       setResult(await api.post<ReportResult>('/api/reports', {
-        text: text.trim(), location: location.trim(), contact: contact.trim() || null, ...(coords ?? {}),
+        text: text.trim(), location: location.trim(), contact: contact.trim() || null, ...(coords ?? {}), ...(trap ? { website: trap } : {}),
       }));
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'The report could not be sent. Check your connection and try again.');
@@ -91,7 +93,8 @@ export default function ReportForm() {
   }
 
   return (
-    <form onSubmit={submit} className="space-y-6" noValidate>
+    <form onSubmit={submit} className="relative space-y-6" noValidate>
+        <Honeypot value={trap} onChange={setTrap} />
       <Field label="What is happening?" hint="Write in any language. Include how many people, injuries and what is needed." htmlFor="report-text">
         <Textarea id="report-text" value={text} onChange={(e) => setText(e.target.value)} required maxLength={2000}
           placeholder="Water has entered houses near the school, 6 people on a rooftop, one elderly man needs insulin" className="min-h-[9rem]" />

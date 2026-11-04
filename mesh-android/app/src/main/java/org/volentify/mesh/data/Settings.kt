@@ -13,9 +13,13 @@ class Settings(context: Context) {
             prefs.edit().putString(KEY_NODE, it).apply()
         }
 
+    /** Only an https:// address is ever used; anything else (e.g. saved by an older version) falls back to the default. */
     var serverUrl: String
-        get() = prefs.getString(KEY_SERVER, null) ?: BuildConfig.DEFAULT_SERVER_URL
-        set(v) = prefs.edit().putString(KEY_SERVER, v.trim().trimEnd('/')).apply()
+        get() = prefs.getString(KEY_SERVER, null)?.takeIf(Rules::isSecureServer) ?: BuildConfig.DEFAULT_SERVER_URL
+        set(v) {
+            val url = v.trim().trimEnd('/')
+            if (Rules.isSecureServer(url)) prefs.edit().putString(KEY_SERVER, url).apply()
+        }
 
     /** Short-lived gateway token issued from the Volentify dashboard (OD-01). Never bundled in the APK. */
     var gatewayToken: String?

@@ -9,6 +9,7 @@
                        alerts or mesh reports that pointed at them are unlinked.
   2026-11-ops-v4       mission lifecycle (accepted/started/completed times, start position, people helped, outcome),
                        volunteer reviews, the audit log, quarantined mesh nodes and the REJECTED review state.
+  2026-11-rate-limits  the rate_limits table: sign-in lockout and registration limits shared by every API instance.
   2026-11-regulators   the four platform regulator accounts (data/regulators.py). An existing account with one of
                        those addresses is taken over: role, verification and password are reset to the provisioned
                        values, so an account registered with the address by someone else cannot keep access.
@@ -131,6 +132,11 @@ def _ops_v4(conn) -> None:
     conn.execute(OPS_V4_SQL)
 
 
+def _rate_limits(conn) -> None:
+    conn.execute('CREATE TABLE IF NOT EXISTS "rate_limits" ("key" TEXT PRIMARY KEY, '
+                 '"window_start" TIMESTAMPTZ NOT NULL DEFAULT now(), "hits" INTEGER NOT NULL DEFAULT 0)')
+
+
 REGULATOR_PROFILE = {"regulator": True, "title": "Regulation & monitoring", "must_change_password": True}
 
 
@@ -155,6 +161,7 @@ MIGRATIONS: list[tuple[str, Callable]] = [
     ("2026-11-purge-demo", _purge_demo),
     ("2026-11-ops-v4", _ops_v4),
     ("2026-11-regulators", _regulators),
+    ("2026-11-rate-limits", _rate_limits),
 ]
 
 

@@ -60,6 +60,7 @@ class MemoryStore:
             self.reviews: dict[tuple[str, str], dict] = {}
             self.audit: list[dict] = []
             self.blocked: dict[str, dict] = {}
+            self.rates: dict[str, tuple[float, int]] = {}
             self._provision_regulators()
 
     def _provision_regulators(self) -> None:
@@ -284,6 +285,17 @@ class MemoryStore:
     def list_mesh_nodes(self) -> list[dict]:
         return copy.deepcopy(sorted(self.mesh_nodes.values(), key=lambda n: n["last_seen_at"], reverse=True))
 
+
+    def hit_rate(self, key: str, window_s: int, increment: bool = True) -> int:
+        with self._lock:
+            now = time.time()
+            start, hits = self.rates.get(key, (now, 0))
+            if now - start > window_s:
+                start, hits = now, 0
+            if increment:
+                hits += 1
+            self.rates[key] = (start, hits)
+            return hits
 
     def list_blocked_nodes(self) -> list[dict]:
         return copy.deepcopy(sorted(self.blocked.values(), key=lambda b: b["created_at"], reverse=True))
@@ -724,6 +736,22 @@ class PostgresStore:
     def list_mesh_nodes(self) -> list[dict]:
         return self._all(f"SELECT {_NODE_COLS} FROM mesh_nodes ORDER BY last_seen_at DESC LIMIT 500")
 
+
+    # cross-instance rate limits (sign-in attempts, registrations)
+    def hit_rate(self, key: str, window_s: int, increment: bool = True) -> int:
+        if not increment:
+            row = self._one("SELECT hits FROM rate_limits WHERE key = %s AND window_start >= now() - make_interval(secs => %s)",
+                            (key, window_s))
+            return int(row["hits"]) if row else 0
+        row = self._one(
+            "INSERT INTO rate_limits (key, window_start, hits) VALUES (%(k)s, now(), 1) ON CONFLICT (key) DO UPDATE SET "
+            "hits = CASE WHEN rate_limits.window_start < now() - make_interval(secs => %(w)s) THEN 1 ELSE rate_limits.hits + 1 END, "
+            "window_start = CASE WHEN rate_limits.window_start < now() - make_interval(secs => %(w)s) THEN now() "
+            "ELSE rate_limits.window_start END RETURNING hits", {"k": key, "w": window_s})
+        return int(row["hits"]) if row else 0
+
+    def prune_rate_limits(self) -> None:
+        self._one("DELETE FROM rate_limits WHERE window_start < now() - interval '1 day' RETURNING 1")
 
     # quarantined nodes & data minimisation
     def list_blocked_nodes(self) -> list[dict]:
