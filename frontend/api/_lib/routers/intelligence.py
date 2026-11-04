@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Query, Response
+from fastapi import APIRouter, Query, Request, Response
 from fastapi.concurrency import run_in_threadpool
 
 from ..core import db, research
-from ..core.security import RateLimiter
+from ..core.security import RateLimiter, current_claims, public_name
 from ..engines import briefing, cyclone, dedup, dispatch, intel, live, rules, surge, triage
 from ..schemas import (
     BriefingRequest, DeduplicatedEvent, DispatchRequest, DispatchResult, MatchRequest, NearbyRequest,
@@ -51,17 +51,20 @@ def briefing_generate(body: BriefingRequest):
 
 
 @router.post("/match", response_model=list[RankedMatch])
-def match(body: MatchRequest, response: Response):
+def match(body: MatchRequest, request: Request, response: Response):
     if body.volunteers is not None:
         volunteers, source = [v.model_dump() for v in body.volunteers], "request"
     else:
         volunteers, source = db.read(lambda s: s.list_volunteers())
     tag(response, source)
-    return dispatch.rank_volunteers(body.task.model_dump(), volunteers)
+    ranked = dispatch.rank_volunteers(body.task.model_dump(), volunteers)
+    if source != "request" and not current_claims(request):
+        ranked = [{**r, "name": public_name(r["name"])} for r in ranked]
+    return ranked
 
 
 @router.post("/match/dispatch-batch", response_model=DispatchResult)
-def dispatch_batch(response: Response, body: DispatchRequest | None = None):
+def dispatch_batch(request: Request, response: Response, body: DispatchRequest | None = None):
     body = body or DispatchRequest()
 
     def load(store):
@@ -81,6 +84,10 @@ def dispatch_batch(response: Response, body: DispatchRequest | None = None):
         "assignment_scores": [a.get("score") if isinstance(a, dict) else getattr(a, "score", None)
                               for a in out.get("assignments") or []],
     })
+    if body.volunteers is None and not current_claims(request):
+        out = {**out, "assignments": [{**a, "volunteer_name": public_name(a["volunteer_name"])}
+                                      for a in out.get("assignments") or []]}
+        return out
     return result
 
 
@@ -116,9 +123,19 @@ async def live_refresh():
     bulletins = await intel.sachet_bulletins(limit=1)
     await run_in_threadpool(mission_watchdog)
     minimised = await run_in_threadpool(_minimise_old_reports)
+    await run_in_threadpool(_prune_rate_limits)
     return {**report, "active_incidents": len(incidents), "facilities_mode": facilities["mode"],
             "hospitals": len(facilities["hospitals"]), "shelters": len(facilities["shelters"]),
             "bulletins_mode": bulletins["mode"], "reports_minimised": minimised}
+
+
+def _prune_rate_limits() -> None:
+    try:
+        pg = db._postgres()
+        if pg is not None:
+            pg.prune_rate_limits()
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def _minimise_old_reports() -> int:

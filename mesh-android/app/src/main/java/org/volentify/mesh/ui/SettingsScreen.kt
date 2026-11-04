@@ -41,6 +41,8 @@ fun SettingsScreen(vm: MeshViewModel, onClose: () -> Unit, onSafety: () -> Unit)
     var name by remember { mutableStateOf(vm.settings.displayName) }
     // Other phones would read such a name as command; only server-verified messages may look official.
     val nameClaimsAuthority = Rules.claimsAuthority(name)
+    // Reports and the gateway token are never sent unencrypted.
+    val serverSecure = Rules.isSecureServer(server)
     val colors = OutlinedTextFieldDefaults.colors(
         focusedBorderColor = Palette.Signal, unfocusedBorderColor = Palette.Line, focusedTextColor = Palette.Ivory,
         unfocusedTextColor = Palette.Ivory, cursorColor = Palette.Signal, focusedLabelColor = Palette.Signal,
@@ -87,7 +89,13 @@ fun SettingsScreen(vm: MeshViewModel, onClose: () -> Unit, onSafety: () -> Unit)
             "Whenever this phone gets mobile data or Wi-Fi it uploads every report it holds to the Volentify website automatically, and brings back messages from command for phones without signal. A gateway token (from your web dashboard) is optional: it marks uploads as coming from a verified responder.",
             style = MaterialTheme.typography.bodyMedium,
         )
-        OutlinedTextField(server, { server = it }, label = { Text("Server address") }, singleLine = true, colors = colors, modifier = Modifier.fillMaxWidth())
+        OutlinedTextField(
+            server, { server = it }, label = { Text("Server address") }, singleLine = true, colors = colors,
+            modifier = Modifier.fillMaxWidth(), isError = !serverSecure,
+            supportingText = {
+                if (!serverSecure) Text("Use an https:// address. Reports and tokens are never sent unencrypted.", color = Palette.Critical)
+            },
+        )
         OutlinedTextField(token, { token = it }, label = { Text("Gateway token (optional)") }, colors = colors, modifier = Modifier.fillMaxWidth(), maxLines = 3)
         Button(
             onClick = {
@@ -98,7 +106,7 @@ fun SettingsScreen(vm: MeshViewModel, onClose: () -> Unit, onSafety: () -> Unit)
                 vm.syncNow()
                 onClose()
             },
-            enabled = !nameClaimsAuthority,
+            enabled = !nameClaimsAuthority && serverSecure,
             shape = RoundedCornerShape(50),
             colors = ButtonDefaults.buttonColors(containerColor = Palette.Signal, contentColor = Palette.Ink),
             modifier = Modifier.fillMaxWidth(),

@@ -195,3 +195,21 @@ the first sign-in (Administration → Your account). Nobody can register a new a
 only a regulator can change a regulator account. To rotate a provisioned password in an emergency, generate a new hash
 with `python -c "from api._lib.core.security import hash_password; print(hash_password('…'))"` (run from `frontend/`)
 and update the row directly.
+
+## Abuse protection
+
+| Layer | What it does | Where |
+| --- | --- | --- |
+| robots.txt and sitemap | Search engines may index public pages; AI-training crawlers and bulk SEO scrapers are asked to stay out entirely; private pages are disallowed | `frontend/app/robots.ts`, `frontend/app/sitemap.ts`, `frontend/lib/crawlers.ts` |
+| Page middleware | Refuses scanners, AI crawlers, scrapers and empty user agents (403); answers attack probes such as `/.env` or `/wp-login.php` with a bare 404; then applies the role rules | `frontend/middleware.ts` |
+| Browser headers | Content Security Policy (code only from this site; connections only to the map, routing and lookup services), HSTS, no framing, no sniffing, Permissions-Policy, `noindex` on personal and console pages | `frontend/next.config.mjs` |
+| API guard | Same agent filter, 1 MB body cap, 600 requests a minute per address (60 for heavy endpoints), cross-site write refusal, strict headers, `/api/docs` hidden on the live site except for administrators | `request_guard` in `frontend/api/index.py` |
+| Sign-in | 8 wrong passwords lock an account for 15 minutes; 40 sign-in attempts and 10 sign-ups per address per 15 minutes; counters live in Postgres (`rate_limits`) so they hold across serverless instances | `frontend/api/_lib/routers/auth.py`, `core/security.py` |
+| Forms | Hidden honeypot field (`website`) on sign-up and public reports: bot submissions are dropped | `frontend/components/ui/Honeypot.tsx` |
+| Privacy | Signed-out visitors see volunteer initials only; positions are coarsened | `routers/entities.py` |
+| Android | HTTPS only (plain http just for `localhost` / `10.0.2.2`), system CAs only, no cloud backup or device transfer, server address validated | `res/xml/network_security_config.xml`, `res/xml/data_extraction_rules.xml`, `Rules.isSecureServer` |
+| Disclosure | `/.well-known/security.txt` points researchers to a private contact | `frontend/public/.well-known/security.txt` |
+
+On top of this, Vercel's own firewall and Bot Protection (Project → Firewall) can be switched on without code changes.
+When adding a new external service to the website, add its host to `connect-src` in `next.config.mjs`, or the browser will
+block it.

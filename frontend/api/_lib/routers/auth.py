@@ -12,7 +12,8 @@ from fastapi.responses import RedirectResponse
 from ..core import audit, db
 from ..core.config import get_settings
 from ..core.security import (
-    ELEVATED_ROLES, NONCE_COOKIE, ROLE_PASS, SESSION_COOKIE, RateLimiter, client_key, hash_password, issue_session,
+    ELEVATED_ROLES, NONCE_COOKIE, ROLE_PASS, SESSION_COOKIE, RateLimiter, client_key, durable_hits, hash_password,
+    issue_session,
     muster_code, muster_signature, require_roles, require_session, session_cookie_kwargs, verify_google_id_token,
     verify_password,
 )
@@ -24,6 +25,16 @@ from .common import new_id, now, tag
 
 router = APIRouter(prefix="/api", tags=["auth"])
 _login_limiter = RateLimiter(limit=10, window_s=60)
+
+# Shared by every API instance (PostgreSQL), so spreading guesses across serverless instances doesn't help.
+LOCKOUT_WINDOW_S = 15 * 60
+MAX_FAILED_PER_ACCOUNT = 8      # wrong passwords for one account, then it is locked for the window
+MAX_ATTEMPTS_PER_ADDRESS = 40   # sign-in attempts from one network address in the window
+MAX_SIGNUPS_PER_ADDRESS = 10    # new accounts from one network address per hour
+
+
+def _too_many(detail: str, retry_s: int) -> HTTPException:
+    return HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, detail, headers={"Retry-After": str(retry_s)})
 STATE_COOKIE = "volentify_oauth_state"
 
 
@@ -133,6 +144,10 @@ def google_login(body: GoogleAuthRequest, request: Request, response: Response):
              status_code=status.HTTP_201_CREATED)
 def register(body: RegisterRequest, request: Request, response: Response):
     _login_limiter.check(client_key(request))
+    if body.website:  # honeypot filled in: an automated sign-up
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Request rejected")
+    if durable_hits(f"signup-ip:{client_key(request)}", 3600) > MAX_SIGNUPS_PER_ADDRESS:
+        raise _too_many("Too many new accounts from this network — try again later", 3600)
     if _reserved(body.email):
         raise HTTPException(status.HTTP_403_FORBIDDEN, f"@{RESERVED_DOMAIN} addresses are reserved for platform staff")
     user = _blank_user(body.name.strip(), body.email, "credentials", password_hash=hash_password(body.password))
@@ -147,8 +162,18 @@ def register(body: RegisterRequest, request: Request, response: Response):
 @router.post("/auth/login", response_model=AuthResponse, response_model_by_alias=True)
 def login(body: LoginRequest, request: Request, response: Response):
     _login_limiter.check(client_key(request))
-    row, source = db.read(lambda s: s.get_user_by_email(body.email.strip().lower()))
+    email = body.email.strip().lower()
+    if durable_hits(f"login-ip:{client_key(request)}", LOCKOUT_WINDOW_S) > MAX_ATTEMPTS_PER_ADDRESS:
+        raise _too_many("Too many sign-in attempts from this network — try again in 15 minutes", LOCKOUT_WINDOW_S)
+    if durable_hits(f"login-fail:{email}", LOCKOUT_WINDOW_S, increment=False) >= MAX_FAILED_PER_ACCOUNT:
+        raise _too_many("Too many wrong passwords for this account — it is locked for 15 minutes", LOCKOUT_WINDOW_S)
+    row, source = db.read(lambda s: s.get_user_by_email(email))
     if not row or not verify_password(body.password, row.get("password_hash")):
+        failures = durable_hits(f"login-fail:{email}", LOCKOUT_WINDOW_S)
+        if row and failures == MAX_FAILED_PER_ACCOUNT:
+            audit.record("auth.lockout", {"sub": row["id"], "email": row["email"], "role": row["role"]},
+                         target_type="user", target_id=row["id"], request=request,
+                         detail={"failed_attempts": failures, "window_minutes": LOCKOUT_WINDOW_S // 60})
         if row and row.get("role") in ELEVATED_ROLES:
             audit.record("auth.login_failed", {"sub": row["id"], "email": row["email"], "role": row["role"]},
                          target_type="user", target_id=row["id"], request=request)
@@ -163,8 +188,11 @@ def login(body: LoginRequest, request: Request, response: Response):
 @router.post("/auth/password", status_code=status.HTTP_204_NO_CONTENT)
 def change_password(body: PasswordChange, request: Request, claims: dict = Depends(require_session)):
     _login_limiter.check(client_key(request))
+    if durable_hits(f"login-fail:{claims['email']}", LOCKOUT_WINDOW_S, increment=False) >= MAX_FAILED_PER_ACCOUNT:
+        raise _too_many("Too many wrong passwords for this account — try again in 15 minutes", LOCKOUT_WINDOW_S)
     row, _ = db.read(lambda s: s.get_user(claims["sub"]))
     if not row or not verify_password(body.current_password, row.get("password_hash")):
+        durable_hits(f"login-fail:{claims['email']}", LOCKOUT_WINDOW_S)
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Your current password is incorrect")
     if body.new_password == body.current_password:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Choose a password you have not used here before")

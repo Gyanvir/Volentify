@@ -281,6 +281,13 @@ CREATE TABLE IF NOT EXISTS "blocked_nodes" (
     "created_at" TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+-- Cross-instance rate limits (sign-in attempts, registrations): one fixed window per key.
+CREATE TABLE IF NOT EXISTS "rate_limits" (
+    "key" TEXT PRIMARY KEY,
+    "window_start" TIMESTAMPTZ NOT NULL DEFAULT now(),
+    "hits" INTEGER NOT NULL DEFAULT 0
+);
+
 -- Platform regulator accounts (regulation & monitoring). Passwords are scrypt hashes; see api/_lib/data/regulators.py.
 INSERT INTO "users" ("id", "name", "email", "phone", "password_hash", "role", "provider", "is_verified", "onboarded", "profile_data", "updated_at") VALUES
     ('usr_regulator_gurpreet', 'Gurpreet', 'gurpreet@volentify.com', '', 'scrypt$ftGbrAlO/XD6boT+Jvta2w==$xc0tYoYOJ7PCB1qn6fVoWbOrU+qexLid2N+fLFncmCM=', 'INCIDENT_ADMIN', 'credentials', true, true, '{"regulator": true, "title": "Regulation & monitoring", "must_change_password": true}', CURRENT_TIMESTAMP),

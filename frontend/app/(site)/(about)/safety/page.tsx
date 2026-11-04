@@ -10,7 +10,7 @@ export const metadata: Metadata = {
   description: 'The rules everyone on Volentify and Volentify Mesh follows, what each role can do, how the platform is secured, and the law behind it.',
 };
 
-const UPDATED = '4 November 2026';
+const UPDATED = '5 November 2026';
 
 const EVERYONE = [
   { title: 'In danger now? Call 112 first.', body: 'Volentify and its mesh are best-effort. A report can take minutes or hours to reach responders. They never replace 112, ambulance 108, fire 101 or police 100.' },
@@ -73,7 +73,10 @@ const SECURITY = [
   ['Who you are', 'Passwords are hashed with scrypt; sessions are signed, HTTP-only cookies that expire after 72 hours. Google sign-in tokens are verified against Google’s keys, audience, issuer and a one-time nonce.'],
   ['What you may do', 'Every action is checked on the server against your role. Command and NGO roles need verification by an administrator; changing your role through onboarding never carries a verification over.'],
   ['Staff accounts', 'The volentify.com address space is reserved: nobody can register with it. Four regulator accounts hold regulation and monitoring access, and only a regulator can change another regulator.'],
-  ['Phones', 'Gateway uploads use short-lived tokens; no server secret ships in the app. Uploads without a token are accepted as public reports and rate-limited per network (20 a minute; 60 with a token). Phone IDs are random, never hardware addresses, and Bluetooth scanning is declared “never for location”.'],
+  ['Phones', 'Gateway uploads use short-lived tokens; no server secret ships in the app. Uploads without a token are accepted as public reports and rate-limited per network (20 a minute; 60 with a token). Phone IDs are random, never hardware addresses, and Bluetooth scanning is declared “never for location”. The app only talks to its server over HTTPS, trusts only certificates Android itself trusts, and keeps its data out of cloud backups and phone-to-phone transfers.'],
+  ['Break-in attempts', 'Eight wrong passwords lock that account for 15 minutes, and one network can try at most 40 sign-ins in 15 minutes. Sign-ups are limited per network, and hidden form fields catch bots. Requests from another website cannot act with your session.'],
+  ['Crawlers and scanners', 'Search engines may index the public safety pages so people can find them. AI-training crawlers, bulk scrapers and vulnerability scanners are refused, attack probes get nothing back, and every network has a request allowance. Volunteer names are shown as initials to signed-out visitors.'],
+  ['In the browser', 'Pages may only run code from Volentify itself, cannot be embedded in another site, and are only served over HTTPS. Personal and console pages are never indexed.'],
   ['Spoofing', 'Fields such as “official” and the sender’s role are set only by the server. A phone or a web form cannot make a message look like it came from command.'],
   ['False reports', 'Command can reject a report (it disappears from public views) and quarantine the phone that sent it; its later uploads are dropped.'],
   ['Accountability', 'Sign-ins to command accounts, role changes, alerts, mission and review decisions and quarantines are written to a hash-chained audit log, kept for at least 180 days. Administrators can verify the chain at any time.'],

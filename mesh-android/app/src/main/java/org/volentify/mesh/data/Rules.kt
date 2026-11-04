@@ -51,6 +51,24 @@ object Rules {
     /** A sender name that would read as command on other phones ("Official", "Volentify …"). */
     fun claimsAuthority(name: String): Boolean = AUTHORITY.containsMatchIn(name)
 
+    /** A developer's own machine: the only place plain http is allowed (matches res/xml/network_security_config.xml). */
+    private val LOCAL_HOSTS = setOf("localhost", "127.0.0.1", "10.0.2.2")
+
+    /**
+     * Gateway uploads carry reports, locations and the gateway token, so the server address must be https://
+     * (plain http only for local testing) and must not embed a username or password.
+     */
+    fun isSecureServer(url: String): Boolean {
+        val uri = try { java.net.URI(url.trim()) } catch (e: Exception) { return false }
+        val host = uri.host?.lowercase() ?: return false
+        if (uri.userInfo != null) return false
+        return when (uri.scheme?.lowercase()) {
+            "https" -> true
+            "http" -> host in LOCAL_HOSTS
+            else -> false
+        }
+    }
+
     enum class Provenance(val label: String) {
         OFFICIAL("Official · Volentify command"),
         /** Arrived over Bluetooth claiming to be official: phones can't verify that, so it is never shown as such. */

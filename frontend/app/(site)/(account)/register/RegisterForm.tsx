@@ -11,6 +11,7 @@ import { AuthShell } from '@/components/auth/AuthShell';
 import { GoogleButton, OrDivider } from '@/components/auth/GoogleButton';
 import { Button } from '@/components/ui/Button';
 import { ErrorState } from '@/components/ui/DataState';
+import { Honeypot } from '@/components/ui/Honeypot';
 import { Field, Input } from '@/components/ui/Field';
 
 export default function RegisterForm() {
@@ -22,6 +23,7 @@ export default function RegisterForm() {
   const { setSession } = useSession();
   const [form, setForm] = useState({ name: '', email: '', password: '' });
   const [busy, setBusy] = useState(false);
+  const [trap, setTrap] = useState('');
   const [error, setError] = useState<string | null>(null);
 
   const passwordShort = form.password.length > 0 && form.password.length < 8;
@@ -32,7 +34,7 @@ export default function RegisterForm() {
     setBusy(true);
     setError(null);
     try {
-      const auth = await api.post<AuthResponse>('/api/auth/register', { ...form, name: form.name.trim(), email: form.email.trim() });
+      const auth = await api.post<AuthResponse>('/api/auth/register', { ...form, name: form.name.trim(), email: form.email.trim(), ...(trap ? { website: trap } : {}) });
       setSession(auth);
       const q = new URLSearchParams();
       if (role) q.set('role', role);
@@ -52,7 +54,8 @@ export default function RegisterForm() {
     >
       <GoogleButton next={role ? `/onboarding?role=${role}` : next} />
       <OrDivider />
-      <form onSubmit={submit} className="space-y-5" noValidate>
+      <form onSubmit={submit} className="relative space-y-5" noValidate>
+        <Honeypot value={trap} onChange={setTrap} />
         <Field label="Full name or unit name" htmlFor="name">
           <Input id="name" autoComplete="name" required value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="Asha Mohanty" />
         </Field>
