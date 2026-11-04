@@ -1,6 +1,7 @@
 import Link from 'next/link';
 import HomeHero from '@/components/home/HomeHero';
 import MapPreview from '@/components/home/MapPreview';
+import NgoPartnersSection from '@/components/home/NgoPartnersSection';
 import { ButtonLink } from '@/components/ui/Button';
 
 const MESH_STEPS = [
@@ -112,6 +113,8 @@ export default function HomePage() {
           />
         </figure>
       </section>
+
+      <NgoPartnersSection />
 
       <section className="page">
         <div className="rounded-[2rem] border border-line bg-ink-900 px-6 py-16 sm:px-14 sm:py-20">

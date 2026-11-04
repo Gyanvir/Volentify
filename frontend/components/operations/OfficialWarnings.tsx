@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { ExternalLink, FileCode, FileText, Globe, MapPin, Newspaper, ShieldAlert, X } from 'lucide-react';
+import { ExternalLink, FileText, Globe, MapPin, Newspaper, ShieldAlert, X } from 'lucide-react';
 import { useApi } from '@/lib/api';
 import type { Bulletin, BulletinFeed } from '@/lib/types';
 import { formatDateTime, timeAgo } from '@/lib/utils';
@@ -179,19 +179,7 @@ export function BulletinModal({
             </a>
           </div>
 
-          <div className="flex items-center justify-between gap-3 sm:justify-end">
-            {b.link && (
-              <a
-                href={b.link}
-                target="_blank"
-                rel="noreferrer"
-                title="Direct machine-readable XML feed for emergency software"
-                className="inline-flex items-center gap-1 text-xs text-stone transition-colors hover:text-sand"
-              >
-                <FileCode className="h-3.5 w-3.5" aria-hidden />
-                Raw CAP XML <ExternalLink className="h-2.5 w-2.5 opacity-60" aria-hidden />
-              </a>
-            )}
+          <div className="flex items-center justify-end">
             <button
               type="button"
               onClick={onClose}
