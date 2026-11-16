@@ -1,7 +1,7 @@
 {
   "name": "volentify-cyclone-ni",
-  "version": "2026.11.09",
-  "trained_at": "2026-11-09T00:50:29+00:00",
+  "version": "2026.11.16",
+  "trained_at": "2026-11-16T00:59:35+00:00",
   "data": {
     "source": "NOAA NCEI IBTrACS v04r01, North Indian Ocean (RSMC New Delhi winds preferred)",
     "storms": 464,
