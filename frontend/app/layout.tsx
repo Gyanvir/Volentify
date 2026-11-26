@@ -6,7 +6,7 @@ import { ToastProvider } from '@/components/ui/Toast';
 import { SessionProvider } from '@/lib/session';
 
 export const metadata: Metadata = {
-  title: { default: 'Volentify — Disaster intelligence for India', template: '%s · Volentify' },
+  title: { default: 'Volentify - Humanitarian Disaster Intelligence Platform', template: '%s · Volentify' },
   description:
     'Live incident mapping, offline mesh field reports, hazard forecasting and volunteer dispatch for India’s disaster responders.',
   applicationName: 'Volentify',

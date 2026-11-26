@@ -12,7 +12,7 @@ import { ErrorState, LoadingRows, SourceTag } from '@/components/ui/DataState';
 import { fmt, formatMinutes } from '@/app/(site)/(intelligence)/analytics/charts';
 
 const CONTACT = 'gyanvirsingh09@gmail.com';
-const REPO = 'https://github.com/Gyanvir/Volentify';
+const REPO = 'https://github.com/thehimanshubansal/Volentify';
 const PRACTICES = reference.transparency_practices as string[];
 
 const SECTIONS = [
@@ -77,7 +77,7 @@ export default function TransparencyView() {
           <dl className="mt-8 divide-y divide-line border-y border-line">
             <Row term="Who runs it">
               An independent, open-source project. The code is public under the MIT licence at{' '}
-              <a href={REPO} className="link" target="_blank" rel="noreferrer">github.com/Gyanvir/Volentify</a>, so
+              <a href={REPO} className="link" target="_blank" rel="noreferrer">github.com/thehimanshubansal/Volentify</a>, so
               anyone can check how every figure on this page is computed.
             </Row>
             <Row term="What it is not">

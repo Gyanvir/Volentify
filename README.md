@@ -10,7 +10,7 @@
 <p align="center">
   <a href="https://volentify.vercel.app">Open Volentify</a> ·
   <a href="https://volentify.vercel.app/map">Live map</a> ·
-  <a href="https://github.com/Gyanvir/Volentify/releases/latest/download/volentify-mesh.apk">Android app (APK)</a> ·
+  <a href="https://github.com/thehimanshubansal/Volentify/releases/latest/download/volentify-mesh.apk">Android app (APK)</a> ·
   <a href="https://volentify.vercel.app/api/docs">API</a>
 </p>
 
@@ -32,7 +32,7 @@ network is down, and sends the right volunteer to the right mission first.
 | Report an incident from the browser — it is triaged in any major Indian language and reaches responders | [/contact](https://volentify.vercel.app/contact) |
 | Find the nearest hospital or shelter to you or to a specific disaster, plus helplines, guidelines and research | [/resources](https://volentify.vercel.app/resources) |
 | Volunteer: get missions matched to your skills and location, start one and follow the route on the map | [/volunteer](https://volentify.vercel.app/volunteer) |
-| Report and relay with **no signal** using the Volentify Mesh Android app | [/mesh](https://volentify.vercel.app/mesh) · [download APK](https://github.com/Gyanvir/Volentify/releases/latest/download/volentify-mesh.apk) |
+| Report and relay with **no signal** using the Volentify Mesh Android app | [/mesh](https://volentify.vercel.app/mesh) · [download APK](https://github.com/thehimanshubansal/Volentify/releases/latest/download/volentify-mesh.apk) |
 | See the response in numbers: live operations, volunteer impact and past disasters | [/analytics](https://volentify.vercel.app/analytics) |
 | Check how Volentify is accountable: figures, data held, how decisions are made | [/transparency](https://volentify.vercel.app/transparency) |
 | Prepare your household for cyclones, floods, earthquakes and heatwaves | [/knowledge](https://volentify.vercel.app/knowledge) |
@@ -52,7 +52,7 @@ teams verified, write to the address below.
 
 ## Volentify Mesh — reporting without a network
 
-Install the [APK](https://github.com/Gyanvir/Volentify/releases/latest/download/volentify-mesh.apk) on an Android phone
+Install the [APK](https://github.com/thehimanshubansal/Volentify/releases/latest/download/volentify-mesh.apk) on an Android phone
 (Android 8 or later with Bluetooth LE) and leave the relay switched on. A report is saved on the phone, handed to nearby
 phones over Bluetooth (roughly 30–50 m, up to five hops), and uploaded by the first phone that gets mobile data or Wi-Fi.
 That phone also brings official messages from incident command back into the offline mesh. Every report shows where it

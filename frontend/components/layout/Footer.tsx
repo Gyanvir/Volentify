@@ -2,7 +2,7 @@ import Link from 'next/link';
 import { Logo } from '@/components/brand/Logo';
 
 export const CONTACT_EMAIL = 'gyanvirsingh09@gmail.com';
-export const REPO_URL = 'https://github.com/Gyanvir/Volentify';
+export const REPO_URL = 'https://github.com/thehimanshubansal/Volentify';
 
 /**
  * Footer: the full site map, grouped by what people come to do. Role-gated consoles (dashboard, command hub,

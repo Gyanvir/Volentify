@@ -175,7 +175,7 @@ def build() -> None:
         ["Google sign-in · Gemini", "LIVE", "client configured · gemini-3.5-flash briefings"],
     ], [42, 32, 96], states_col=1))
     S(Spacer(1, 8 * mm))
-    S(P(f"Repository: github.com/Gyanvir/Volentify (public) · version 3.5.0 · commit {sha}. Figures are read from the "
+    S(P(f"Repository: github.com/thehimanshubansal/Volentify (public) · version 3.5.0 · commit {sha}. Figures are read from the "
         "repository's model card and benchmark files and from the live site at the time of writing. Where something is a "
         "target rather than a measurement, it says so. This edition supersedes the 2 November 2026 reference.", small))
     S(PageBreak())

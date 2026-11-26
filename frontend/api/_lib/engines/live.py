@@ -33,7 +33,7 @@ log = logging.getLogger("volentify.live")
 REGION = {"min_lat": 4.0, "max_lat": 38.0, "min_lng": 65.0, "max_lng": 100.0}
 REFRESH_S = 15 * 60
 FETCH_TIMEOUT = httpx.Timeout(7.0, connect=4.0)
-USER_AGENT = "Volentify/3.5 (+https://github.com/Gyanvir/Volentify; disaster intelligence for India)"
+USER_AGENT = "Volentify/3.5 (+https://github.com/thehimanshubansal/Volentify; disaster intelligence for India)"
 
 GDACS_URL = "https://www.gdacs.org/gdacsapi/api/events/geteventlist/SEARCH"
 USGS_URL = "https://earthquake.usgs.gov/fdsnws/event/1/query"

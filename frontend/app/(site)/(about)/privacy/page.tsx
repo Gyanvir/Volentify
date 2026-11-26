@@ -94,7 +94,7 @@ export default function PrivacyPage() {
           <p>
             For privacy questions or requests, write to <a href="mailto:gyanvirsingh09@gmail.com">gyanvirsingh09@gmail.com</a>,
             use the <Link href="/contact">contact page</Link> or open an issue on the{' '}
-            <a href="https://github.com/Gyanvir/Volentify">project repository</a>. In an emergency, call 112.
+            <a href="https://github.com/thehimanshubansal/Volentify">project repository</a>. In an emergency, call 112.
           </p>
         </Prose>
       </div>
